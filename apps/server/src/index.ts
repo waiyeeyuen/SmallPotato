@@ -5,6 +5,7 @@ import { loadConfig, writeCodexConfig } from "./config.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
+import { SecurityService } from "./security-service.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
@@ -12,10 +13,12 @@ await writeCodexConfig(config);
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 const runner = createRunner(config);
-const service = new AgentService(config, store, workspaces, runner);
+const security = new SecurityService(store, config.dataDirectory);
+const service = new AgentService(config, store, workspaces, runner, security);
 await service.initialize();
+await security.initialize();
 
-const app = await createApp(config, service);
+const app = await createApp(config, service, security);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

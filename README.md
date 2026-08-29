@@ -1,29 +1,46 @@
-# Volc Agent Launchpad
+# PotatoGuard
 
-A minimal Agent platform for three-day middleware hackathons. It provides Agent
-CRUD, a browser Playground, persistent workspaces, and Codex CLI backed by the
-Volcengine Ark Responses API.
+**Just-in-time capability leases for autonomous Agents.** PotatoGuard is a
+submission-ready Track 1 extension of the Volc Agent Launchpad. It combines
+password authentication, separate human and Agent identities, a protected
+resource vault, deny-by-default permissions, Runtime-level read-only mounts,
+revocation, and tamper-evident access receipts.
 
 Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> This is a complete hackathon reference implementation with real backend
+> authorization. It is not a hardened multi-tenant security product. Use only
+> fictional resources and development credentials. See
+> [SECURITY.md](SECURITY.md).
 
-## Screenshots
+## Track 1 submission: Bouncer
 
-### Agent Playground
+PotatoGuard separates the human operating the platform from the Agent acting
+for that human. A protected file is mounted into the disposable Agent Runtime
+only when a scoped, unexpired, unrevoked capability permits the read. Denied
+files never enter the Runtime.
 
-![Agent Playground showing lifecycle controls, starter prompts, and the Codex Runtime](docs/assets/playground.jpg)
+The submission includes:
 
-### Create an Agent
-
-![Create Agent form with name, description, and workspace instructions](docs/assets/create-agent.jpg)
+- [One-page architecture and trust-boundary diagram](docs/POTATOGUARD_ARCHITECTURE.md)
+- [Three-minute live demo script](docs/DEMO.md)
+- [Exact happy-path and edge-case judge runbook](docs/JUDGE_RUNBOOK.md)
+- Automated authentication, ownership, authorization, revocation, and Runtime
+  mount tests
 
 ## Features
 
+- Username/password login with scrypt password hashes and HttpOnly sessions
+- Per-user Agent ownership and a separate principal for every Agent
+- Time-limited capability leases scoped to one Agent, action, and resource
+- Protected-resource create, metadata/content replacement, and safe deletion
+- Backend policy enforcement before Agent execution
+- Read-only protected-file mounts in disposable local Runtime containers
+- Immediate revocation, automatic expiry, and deny-by-default behavior
+- Hash-chained allow/deny receipts with human and Agent attribution and CSV export
+- Browser-supplied human/owner IDs rejected at the HTTP boundary
 - React and TypeScript Web UI
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
@@ -65,7 +82,17 @@ cd volc-agent-launchpad
 
 Skip this step when already working from the repository root.
 
-### 3. Start the POC
+### 3. Start the product
+
+If `.env` already contains `ARK_API_KEY`, `ARK_MODEL`, and optionally
+`ARK_BASE_URL`, run:
+
+```bash
+npm run poc
+```
+
+The startup script reads only those three Ark settings from `.env`; it ignores
+Docker-only paths and other shell settings. You can also supply them explicitly:
 
 ```bash
 ARK_API_KEY=your-ark-api-key \
@@ -85,12 +112,24 @@ open http://localhost:3000       # macOS
 xdg-open http://localhost:3000   # Linux desktop
 ```
 
+Sign in with one of the seeded, fictional demo accounts:
+
+| User | Username | Password |
+| --- | --- | --- |
+| Alice Tan | `alice` | `alice-potato` |
+| Bob Lim | `bob` | `bob-potato` |
+
+These published credentials are controlled fixtures, not production accounts.
+
 In the Web UI:
 
-1. Select **Create Agent**.
-2. Enter a name, description, and workspace instructions.
-3. Select **Create Agent** again.
-4. Enter a task in the Playground, for example:
+1. Sign in as Alice and select **Create Agent**.
+2. Open **Access leases** and issue a short-lived read capability for Alice's
+   Launch Plan.
+3. Return to the Playground, select the Launch Plan, and ask the Agent to
+   summarize it.
+4. Open **Audit receipts** to inspect the allowed decision.
+5. Select Bob's Finance Report and repeat the task to demonstrate backend denial.
 
    ```text
    Create a TypeScript hello-world CLI, add a test, and run it.
@@ -98,6 +137,10 @@ In the Web UI:
 
 The Agent can write files, run commands, and continue the same Codex session in
 later messages.
+
+Protected-resource tasks require the `npm run poc` container profile. This is
+intentional: the read-only bind mount is the enforcement boundary. Ordinary
+unprotected tasks remain available in the local development profile.
 
 ### 5. Stop and resume
 
@@ -215,8 +258,10 @@ See [.env.example](.env.example) for all Runtime and resource-limit options.
 ```mermaid
 flowchart LR
     UI["React Web UI"] --> API["Fastify control plane"]
-    API --> Store["JSON metadata and Agent workspaces"]
-    API --> Runtime{"Runtime provider"}
+    API --> Policy["Ownership and capability policy"]
+    Policy --> Vault["Server-side protected resource vault"]
+    Policy --> Audit["Hash-chained access receipts"]
+    Policy --> Runtime{"Runtime provider"}
     Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
     Runtime -->|ECS profile| Codex["Codex CLI in application container"]
     Container --> Ark["Volcengine Ark Responses API"]
@@ -243,6 +288,7 @@ docker compose config
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
+- [Judge runbook](docs/JUDGE_RUNBOOK.md)
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 

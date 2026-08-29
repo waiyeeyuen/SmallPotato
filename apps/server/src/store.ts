@@ -1,13 +1,112 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { receiptHash } from "./audit.js";
 import type { Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 1,
+  version: 3,
+  users: [],
+  sessions: [],
   agents: [],
   messages: [],
   runs: [],
+  resources: [],
+  grants: [],
+  decisions: [],
 });
+
+function migrateDatabase(value: unknown): Database {
+  const parsed = value as Partial<Database> & {
+    version?: number;
+    agents?: Array<Record<string, unknown>>;
+  };
+  if (!Array.isArray(parsed.agents)) throw new Error("Unsupported database format");
+  if (parsed.version === 3) return parsed as Database;
+  let base: Record<string, unknown>;
+  if (parsed.version === 2) {
+    base = parsed as unknown as Record<string, unknown>;
+  } else if (parsed.version === 1) {
+    base = {
+      ...emptyDatabase(),
+      version: 2,
+      agents: parsed.agents.map((agent) => ({
+        ...agent,
+        ownerUserId: "user-alice",
+        principalId: randomUUID(),
+      })),
+      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      runs: (Array.isArray(parsed.runs) ? parsed.runs : []).map((run) => ({
+        ...run,
+        resourceId: null,
+        policyDecisionId: null,
+      })),
+    };
+  } else {
+    throw new Error("Unsupported database format");
+  }
+
+  const users = Array.isArray(base.users) ? base.users as Database["users"] : [];
+  const agents = Array.isArray(base.agents) ? base.agents as Database["agents"] : [];
+  const timestamp = new Date().toISOString();
+  const resources = (Array.isArray(base.resources) ? base.resources : []).map((item) => {
+    const resource = item as Partial<Database["resources"][number]> & {
+      createdAt?: string;
+    };
+    return {
+      ...resource,
+      sizeBytes: resource.sizeBytes ?? 0,
+      isDemo: resource.isDemo ?? String(resource.id).startsWith("resource-"),
+      deletedAt: resource.deletedAt ?? null,
+      createdAt: resource.createdAt ?? timestamp,
+      updatedAt: resource.updatedAt ?? resource.createdAt ?? timestamp,
+    } as Database["resources"][number];
+  });
+  let previousReceiptHash: string | null = null;
+  const decisions = (Array.isArray(base.decisions) ? base.decisions : []).map((item) => {
+    const decision = item as Partial<Database["decisions"][number]> & {
+      humanUserId: string;
+      agentId: string;
+      resourceId: string;
+    };
+    const payload = {
+      id: String(decision.id),
+      humanUserId: decision.humanUserId,
+      humanName:
+        decision.humanName ?? users.find((user) => user.id === decision.humanUserId)?.displayName ?? "Unknown user",
+      agentId: decision.agentId,
+      agentName:
+        decision.agentName ?? agents.find((agent) => agent.id === decision.agentId)?.name ?? "Unknown Agent",
+      agentPrincipalId: String(decision.agentPrincipalId),
+      action: decision.action ?? "read",
+      resourceId: decision.resourceId,
+      resourceName:
+        decision.resourceName ?? resources.find((resource) => resource.id === decision.resourceId)?.name ?? "Unknown resource",
+      outcome: decision.outcome ?? "deny",
+      reason: decision.reason ?? "RESOURCE_NOT_FOUND",
+      grantId: decision.grantId ?? null,
+      createdAt: decision.createdAt ?? timestamp,
+    } as const;
+    const migrated = {
+      ...payload,
+      runId: decision.runId ?? null,
+      previousReceiptHash,
+      receiptHash: receiptHash(payload, previousReceiptHash),
+    } as Database["decisions"][number];
+    previousReceiptHash = migrated.receiptHash;
+    return migrated;
+  });
+
+  return {
+    ...emptyDatabase(),
+    ...base,
+    version: 3,
+    users,
+    agents,
+    resources,
+    decisions,
+  } as Database;
+}
 
 export class JsonStore {
   private data: Database = emptyDatabase();
@@ -19,11 +118,9 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database;
-      if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
-        throw new Error("Unsupported database format");
-      }
-      this.data = parsed;
+      const parsed = JSON.parse(raw) as unknown;
+      this.data = migrateDatabase(parsed);
+      if ((parsed as { version?: number }).version !== 3) await this.persist(this.data);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

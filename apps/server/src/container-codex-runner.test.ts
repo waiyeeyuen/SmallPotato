@@ -24,6 +24,13 @@ describe("Container Codex runner", () => {
         workspacePath: "/tmp/agent-workspace",
         prompt: "write a small program",
         threadId: null,
+        mounts: [
+          {
+            sourcePath: "/tmp/protected/resource.txt",
+            targetPath: "/authorized-resources/resource.txt",
+            readOnly: true,
+          },
+        ],
       },
       config,
     );
@@ -34,6 +41,9 @@ describe("Container Codex runner", () => {
     expect(args).toContain("runtime:test");
     expect(args).toContain("type=bind,src=/tmp/agent-workspace,dst=/workspace");
     expect(args).toContain("type=bind,src=/tmp/codex-home,dst=/codex-home");
+    expect(args).toContain(
+      "type=bind,src=/tmp/protected/resource.txt,dst=/authorized-resources/resource.txt,readonly",
+    );
     expect(args).toContain("501:20");
     expect(args).toContain("workspace-write");
     expect(args).toContain("/workspace");

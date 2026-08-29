@@ -4,6 +4,39 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+load_dotenv() {
+  local line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    line="${line#export }"
+    if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      case "$key" in
+        ARK_API_KEY|ARK_MODEL|ARK_BASE_URL) ;;
+        *) continue ;;
+      esac
+      value="${BASH_REMATCH[2]}"
+      value="${value#${value%%[![:space:]]*}}"
+      value="${value%${value##*[![:space:]]}}"
+      if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+        value="${value:1:${#value}-2}"
+      elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+      if [[ -z "${!key:-}" ]]; then
+        export "$key=$value"
+      fi
+    fi
+  done < "$1"
+}
+
+if [[ -f "$repo_dir/.env" ]]; then
+  printf '[local-poc] Loading Ark settings from %s/.env\n' "$repo_dir" >&2
+  load_dotenv "$repo_dir/.env"
+fi
+
 runtime_image="${CONTAINER_RUNTIME_IMAGE:-volc-agent-runtime:local}"
 runtime_base_image="${CONTAINER_RUNTIME_BASE_IMAGE:-node:22-bookworm-slim}"
 runtime_apt_mirror="${CONTAINER_APT_MIRROR:-}"

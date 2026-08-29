@@ -80,6 +80,14 @@ export function buildContainerRunArgs(
     "type=bind,src=" + request.workspacePath + ",dst=/workspace",
     "--mount",
     "type=bind,src=" + config.codexHome + ",dst=/codex-home",
+    ...(request.mounts ?? []).flatMap((mount) => [
+      "--mount",
+      "type=bind,src=" +
+        mount.sourcePath +
+        ",dst=" +
+        mount.targetPath +
+        (mount.readOnly ? ",readonly" : ""),
+    ]),
     "--workdir",
     "/workspace",
     config.containerRuntimeImage,

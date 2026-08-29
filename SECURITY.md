@@ -1,4 +1,4 @@
-# Security policy
+# PotatoGuard security policy
 
 Volc Agent Launchpad is a hackathon proof of concept. Only the latest revision
 on the default branch is supported.
@@ -11,8 +11,11 @@ credentials, personal data, or exploit details in an issue.
 
 ## Known limitations
 
-- Shared demo token; no user identity, authorization, RBAC, or tenant isolation
-- No CSRF protection
+- Seeded demonstration accounts with published credentials
+- Local JSON persistence rather than a production identity or session store
+- Receipt hashes detect modification but are not an external append-only/WORM log
+- SameSite session cookies without a complete production CSRF strategy
+- Resource authorization is designed and validated for the local container profile
 - No per-Agent container boundary in ECS mode
 - Ordinary local containers, not hardened multi-tenant sandboxes
 - Broad outbound network access
@@ -23,9 +26,12 @@ credentials, personal data, or exploit details in an issue.
 ## Safe use
 
 - Use a dedicated development machine or disposable ECS instance.
-- Use a scoped, revocable Ark key and a unique `APP_AUTH_TOKEN`.
+- Use a scoped, revocable Ark key and rotate the seeded passwords before any
+  non-demo deployment.
 - Keep local use on loopback and restrict ECS Web and SSH CIDRs.
-- Add HTTPS before sending the shared token over an untrusted network.
+- Add HTTPS and Secure cookies before use over an untrusted network.
+- Replace seeded identities with SSO/OIDC and move sessions, policies, and
+  receipts to durable transactional services before production use.
 - Never mount production data or provide Volcengine account AK/SK to Agents.
 - Stop the POC, destroy test resources, and revoke keys after the event.
 

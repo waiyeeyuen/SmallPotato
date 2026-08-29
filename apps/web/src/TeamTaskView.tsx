@@ -219,13 +219,17 @@ export function TeamTaskView({
     <section className="team-view">
       <header className="team-heading">
         <div>
-          <span className="eyebrow">Coordination middleware</span>
           <h1>Team Tasks</h1>
           <p>A Lead reviews every contribution, dynamically selects the next specialist, and consolidates the shared conversation.</p>
         </div>
-        <div className="team-heading-metric">
-          <strong>{tasks.filter((item) => item.status === "completed").length}</strong>
-          <span>completed</span>
+        <div className="team-heading-actions">
+          <div className="team-heading-metric">
+            <strong>{tasks.filter((item) => item.status === "completed").length}</strong>
+            <span>completed</span>
+          </div>
+          {task && terminalStatuses.has(task.status) && (
+            <button className="button button-primary team-heading-action" onClick={startAnotherTask}>Start another task</button>
+          )}
         </div>
       </header>
 
@@ -274,7 +278,7 @@ export function TeamTaskView({
                   </select>
                 </label>
                 <fieldset>
-                  <legend>Specialist pool</legend>
+                  <legend className="team-fieldset-title">Specialist pool</legend>
                   <div className="team-specialist-list">
                     {agents.filter((agent) => agent.id !== leadId).map((agent) => (
                       <label className="team-agent-choice" key={agent.id}>
@@ -284,7 +288,8 @@ export function TeamTaskView({
                           disabled={agent.status !== "ready" || Boolean(agent.activeTeamTaskId)}
                           onChange={() => toggleSpecialist(agent.id)}
                         />
-                        <span>
+                        <span className="team-choice-avatar" aria-hidden="true">{initials(agent.name)}</span>
+                        <span className="team-choice-copy">
                           <strong>{agent.name}</strong>
                           <small>{specialistIds.includes(agent.id) ? "Available to Lead · " : ""}{agent.description || agent.status}</small>
                         </span>
@@ -295,7 +300,6 @@ export function TeamTaskView({
                 <button className="button button-primary" disabled={submitting || !objective.trim() || !leadId || specialistIds.length === 0}>
                   {submitting ? <span className="spinner" aria-label="Starting" /> : "Start Team Task"}
                 </button>
-                <small className="team-form-note">This is an authorized specialist pool, not a fixed sequence. After every contribution, the Lead reads the updated transcript and chooses the best next Agent.</small>
               </>
             )}
           </form>
@@ -323,7 +327,43 @@ export function TeamTaskView({
               <p>Define an objective, choose a Lead, and assign at least one specialist.</p>
             </div>
           ) : (
-            <>
+            <div className="team-chat" aria-label="Team conversation">
+              <article className="team-message team-message-objective">
+                <div className="team-avatar" aria-hidden="true">Y</div>
+                <div className="team-message-body">
+                  <div className="team-message-meta"><strong>You</strong><span>Objective</span><time>{time(task.createdAt)}</time></div>
+                  <div className="team-bubble"><MarkdownContent>{task.objective}</MarkdownContent></div>
+                </div>
+              </article>
+
+              {events.map((item) => {
+                const agentName = item.agentId ? agentMap.get(item.agentId)?.name ?? "Unknown Agent" : "Coordinator";
+                if (item.type === "specialist_result" && item.chatContent) {
+                  return <article className="team-message team-message-specialist" key={item.id}>
+                    <div className="team-avatar" aria-hidden="true">{initials(agentName)}</div>
+                    <div className="team-message-body"><div className="team-message-meta"><strong>{agentName}</strong><span>Specialist</span><time>{time(item.createdAt)}</time></div><div className="team-bubble"><MarkdownContent>{item.chatContent}</MarkdownContent></div></div>
+                  </article>;
+                }
+                if (["turn_retry", "turn_failed", "task_paused", "task_resumed", "task_stopped"].includes(item.type)) {
+                  return <article className={`team-system-entry team-system-entry-${item.type}`} key={item.id}>
+                    <div className="team-system-meta"><time>{time(item.createdAt)}</time></div>
+                    <div className={`team-system-message team-system-message-${item.type}`}>
+                      <span aria-hidden="true">{item.type === "turn_retry" ? "↻" : "!"}</span>
+                      <span className="team-system-content">{item.content}</span>
+                    </div>
+                  </article>;
+                }
+                return null;
+              })}
+              {task.status === "running" && <div className="team-typing"><span /><span /><span /><small>Waiting for structured Agent output</small></div>}
+              <div ref={conversationEnd} />
+            </div>
+          )}
+        </div>
+
+        {task && (
+          <aside className="team-inspector">
+            <section className="team-status-panel">
               <div className="team-summary">
                 <div>
                   <span className={`team-status team-status-${task.status}`}>{task.status}</span>
@@ -334,7 +374,6 @@ export function TeamTaskView({
                   {task.status === "running" && <button className="button button-danger" disabled={submitting} onClick={() => void action("stop")}>Stop task</button>}
                   {task.status === "paused" && <button className="button button-primary" disabled={submitting} onClick={() => void action("resume")}>Resume</button>}
                   {task.status === "paused" && <button className="button button-danger" disabled={submitting} onClick={() => void action("stop")}>Stop</button>}
-                  {terminalStatuses.has(task.status) && <button className="button button-primary" onClick={startAnotherTask}>Start another task</button>}
                 </div>
               </div>
 
@@ -375,7 +414,11 @@ export function TeamTaskView({
                 </div>
               )}
 
-              {task.lastError && <div className="run-error"><strong>Attention needed</strong><span>{task.lastError}</span></div>}
+              {task.lastError && (
+                <div className="team-error">
+                  <div><h3>Attention needed</h3><p>{task.lastError}</p></div>
+                </div>
+              )}
 
               {task.completionSummary && (
                 <div className="team-complete">
@@ -383,58 +426,32 @@ export function TeamTaskView({
                   <div><small>Lead synthesis</small><h3>Objective completed</h3><MarkdownContent>{task.completionSummary}</MarkdownContent></div>
                 </div>
               )}
+            </section>
 
-              <div className="team-chat" aria-label="Team conversation">
-                <article className="team-message team-message-objective">
-                  <div className="team-avatar" aria-hidden="true">Y</div>
-                  <div className="team-message-body">
-                    <div className="team-message-meta"><strong>You</strong><span>Objective</span><time>{time(task.createdAt)}</time></div>
-                    <div className="team-bubble"><MarkdownContent>{task.objective}</MarkdownContent></div>
-                  </div>
-                </article>
-
+            <section className="team-logs">
+              <header className="team-logs-heading"><span>Activity and coordination evidence</span><small>{events.length} events · shared state v{task.stateVersion}</small></header>
+              <div className="team-log-list">
                 {events.map((item) => {
-                  const agentName = item.agentId ? agentMap.get(item.agentId)?.name ?? "Unknown Agent" : "Coordinator";
-                  if (item.type === "specialist_result" && item.chatContent) {
-                    return <article className="team-message team-message-specialist" key={item.id}>
-                      <div className="team-avatar" aria-hidden="true">{initials(agentName)}</div>
-                      <div className="team-message-body"><div className="team-message-meta"><strong>{agentName}</strong><span>Specialist</span><time>{time(item.createdAt)}</time></div><div className="team-bubble"><MarkdownContent>{item.chatContent}</MarkdownContent></div></div>
-                    </article>;
-                  }
-                  if (["turn_retry", "turn_failed", "task_paused", "task_resumed", "task_stopped"].includes(item.type)) {
-                    return <div className={`team-system-message team-system-message-${item.type}`} key={item.id}><span>{item.type === "turn_retry" ? "↻" : "!"}</span>{item.content}<time>{time(item.createdAt)}</time></div>;
-                  }
-                  return null;
+                  const actor = item.agentId ? agentMap.get(item.agentId)?.name ?? "Unknown Agent" : "Platform";
+                  return <details className="team-log" key={item.id}>
+                    <summary>
+                      <span className="team-log-actor"><strong>#{item.sequence}</strong><strong>{actor}</strong></span>
+                      <time>{time(item.createdAt)}</time>
+                      <span className="team-log-preview">{oneLine(item.assignment ?? item.content)}</span>
+                    </summary>
+                    <div className="team-log-detail">
+                      <dl><div><dt>Event</dt><dd>{item.type}</dd></div>{item.attempt && <div><dt>Attempt</dt><dd>{item.attempt}</dd></div>}</dl>
+                      <p>{item.content}</p>
+                      {item.chatContent && <div><strong>Visible contribution</strong><p>{item.chatContent}</p></div>}
+                      {item.assignment && <div><strong>Assignment</strong><p>{item.assignment}</p></div>}
+                      {item.statePatch && Object.keys(item.statePatch).length > 0 && <div><strong>State patch</strong><pre><code>{JSON.stringify(item.statePatch, null, 2)}</code></pre></div>}
+                    </div>
+                  </details>;
                 })}
-                {task.status === "running" && <div className="team-typing"><span /><span /><span /><small>Waiting for structured Agent output</small></div>}
-                <div ref={conversationEnd} />
               </div>
-
-              <details className="team-logs">
-                <summary><span>Activity and coordination evidence</span><small>{events.length} events · shared state v{task.stateVersion}</small></summary>
-                <div className="team-log-list">
-                  {events.map((item) => {
-                    const actor = item.agentId ? agentMap.get(item.agentId)?.name ?? "Unknown Agent" : "Platform";
-                    return <details className="team-log" key={item.id}>
-                      <summary>
-                        <span className="team-log-actor"><strong>#{item.sequence}</strong><strong>{actor}</strong></span>
-                        <time>{time(item.createdAt)}</time>
-                        <span className="team-log-preview">{oneLine(item.assignment ?? item.content)}</span>
-                      </summary>
-                      <div className="team-log-detail">
-                        <dl><div><dt>Event</dt><dd>{item.type}</dd></div>{item.attempt && <div><dt>Attempt</dt><dd>{item.attempt}</dd></div>}</dl>
-                        <p>{item.content}</p>
-                        {item.chatContent && <div><strong>Visible contribution</strong><p>{item.chatContent}</p></div>}
-                        {item.assignment && <div><strong>Assignment</strong><p>{item.assignment}</p></div>}
-                        {item.statePatch && Object.keys(item.statePatch).length > 0 && <div><strong>State patch</strong><pre><code>{JSON.stringify(item.statePatch, null, 2)}</code></pre></div>}
-                      </div>
-                    </details>;
-                  })}
-                </div>
-              </details>
-            </>
-          )}
-        </div>
+            </section>
+          </aside>
+        )}
       </div>
     </section>
   );

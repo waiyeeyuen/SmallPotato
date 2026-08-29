@@ -50,6 +50,13 @@ const leadDecisionSchema = z.object({
 
 type LeadDecision = z.infer<typeof leadDecisionSchema>;
 
+const specialistResultSchema = z.object({
+  message: z.string().trim().min(1).max(MAX_CONTRIBUTION_LENGTH),
+  activity: z.string().trim().min(1).max(MAX_CONTRIBUTION_LENGTH),
+});
+
+type SpecialistResult = z.infer<typeof specialistResultSchema>;
+
 export class TeamTaskService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
 
@@ -91,6 +98,7 @@ export class TeamTaskService {
     return this.store
       .snapshot()
       .teamTaskEvents.filter((event) => event.taskId === taskId)
+      .map((event) => ({ ...event, chatContent: event.chatContent ?? null }))
       .sort((left, right) => left.sequence - right.sequence);
   }
 
@@ -216,7 +224,7 @@ export class TeamTaskService {
       if (isLead) {
         await this.applyLeadDecision(taskId, actingAgent.id, outcome.result, outcome.decision!);
       } else {
-        await this.applySpecialistResult(taskId, actingAgent.id, outcome.result);
+        await this.applySpecialistResult(taskId, actingAgent.id, outcome.result, outcome.specialistResult!);
       }
     }
   }
@@ -225,7 +233,11 @@ export class TeamTaskService {
     initialTask: TeamTask,
     agent: Agent,
     isLead: boolean,
-  ): Promise<{ result: RunnerResult; decision: LeadDecision | null } | null> {
+  ): Promise<{
+    result: RunnerResult;
+    decision: LeadDecision | null;
+    specialistResult: SpecialistResult | null;
+  } | null> {
     let lastError = "Agent turn failed";
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       const task = this.getTask(initialTask.id);
@@ -253,10 +265,11 @@ export class TeamTaskService {
           throw new Error("Agent contribution exceeded 20,000 characters");
         }
         const decision = isLead ? this.parseLeadDecision(result.output) : null;
+        const specialistResult = isLead ? null : this.parseSpecialistResult(result.output);
         if (decision?.decision.type === "complete" && !this.allSpecialistsInvoked(task)) {
           throw new Error("Lead cannot complete the Team Task before every selected specialist has been invoked");
         }
-        return { result, decision };
+        return { result, decision, specialistResult };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         if (this.getTask(task.id).status !== "running") return null;
@@ -325,12 +338,17 @@ export class TeamTaskService {
     });
   }
 
-  private async applySpecialistResult(taskId: string, agentId: string, result: RunnerResult): Promise<void> {
+  private async applySpecialistResult(
+    taskId: string,
+    agentId: string,
+    result: RunnerResult,
+    response: SpecialistResult,
+  ): Promise<void> {
     await this.store.mutate((database) => {
       const task = this.findRunningTask(database, taskId, agentId);
       const assignment = task.currentAssignment;
       task.threadIds[agentId] = result.threadId;
-      this.addEvent(database, task, "specialist_result", agentId, result.output.trim(), assignment);
+      this.addEvent(database, task, "specialist_result", agentId, response.activity, assignment, null, null, response.message);
       task.currentAgentId = task.leadAgentId;
       task.currentAssignment = "Review the specialist result and decide the next step.";
       task.lastError = null;
@@ -348,7 +366,9 @@ export class TeamTaskService {
     const history = database.teamTaskEvents
       .filter((event) => event.taskId === task.id)
       .sort((left, right) => left.sequence - right.sequence)
-      .map((event) => "#" + event.sequence + " [" + event.type + "] " + event.content)
+      .map((event) => "#" + event.sequence + " [" + event.type + "] "
+        + (event.chatContent ? "Visible message: " + event.chatContent + "\nActivity: " : "")
+        + event.content)
       .join("\n")
       .slice(-MAX_HISTORY_LENGTH);
     const identity = [
@@ -366,11 +386,11 @@ export class TeamTaskService {
       "Shared event history:\n" + (history || "No earlier events"),
     ].join("\n\n");
     if (!isLead) {
-      return common + `\n\nComplete exactly the current assignment and reply with a concise result for the Lead. Follow the assignment's intent:\n- For a direct conversational action, return the requested result directly. Do not create a file or script merely to produce that result.\n- Create code or another workspace artifact only when the objective or assignment explicitly requests it.\n- When execution is explicitly requested, run the artifact, verify it, and include the actual output in your result.\nDo not choose the next Agent.`;
+      return common + `\n\nComplete exactly the current assignment. The shared workspace being available does not imply that you should create an artifact:\n- For a direct conversational action, return the requested result directly. Do not create, edit, or persist a file or script merely to produce that result.\n- Create code or another workspace artifact only when the objective or assignment explicitly requests a file, implementation, or persisted deliverable.\n- When execution is explicitly requested, run the artifact, verify it, and record the actual output in activity.\n- Put only the concise contribution that belongs in the shared conversation in message. Put file operations, commands, verification, and other process detail in activity.\nDo not choose the next Agent. Reply with JSON only, without markdown fences, using this shape:\n{"message":"concise chat-visible contribution","activity":"operational result for the Lead and Activity logs"}`;
     }
     const nextSpecialist = database.agents.find((item) => item.id === this.nextSpecialistId(database, task));
     const remainingInvocations = Math.max(0, task.specialistAgentIds.length - this.delegationCount(database, task.id));
-    return common + `\n\nYou are the Lead Agent. You may inspect or edit the shared workspace before deciding. The coordinator, not you, selects specialists in strict round-robin order. Your next delegated assignment will go to ${nextSpecialist?.name ?? "the next specialist"}. Every selected specialist must be invoked before completion${remainingInvocations > 0 ? `; ${remainingInvocations} initial specialist invocation(s) remain` : ""}.\n\nMake each assignment specific to that specialist and faithful to the objective. For collaborative sequences such as a countdown, delegate exactly one atomic visible contribution per turn (for example, one number), use shared state to track progress, and continue until the entire sequence is complete. Direct conversational actions should request the literal result; request code, files, or execution only when the objective calls for them.\n\nReply with JSON only, without markdown fences, using one of these shapes:\n{"message":"progress update","statePatch":{"phase":"next phase"},"decision":{"type":"delegate","assignment":"specific work for the next specialist"}}\n{"message":"completion update","statePatch":{"phase":"complete"},"decision":{"type":"complete","summary":"final outcome and artifact locations, when applicable"}}`;
+    return common + `\n\nYou are the Lead Agent. The coordinator, not you, selects specialists in strict round-robin order. Your next delegated assignment will go to ${nextSpecialist?.name ?? "the next specialist"}. Every selected specialist must be invoked before completion${remainingInvocations > 0 ? `; ${remainingInvocations} initial specialist invocation(s) remain` : ""}.\n\nMake each assignment specific to that specialist and faithful to the objective. For collaborative sequences such as a countdown, delegate exactly one atomic visible contribution per turn (for example, one number), use shared state to track progress, and continue until the entire sequence is complete. For conversational objectives, request the literal result and do not ask specialists to create, edit, or persist files. Request code, files, workspace inspection, or execution only when the objective explicitly calls for an implementation or persisted deliverable. Keep delegation and process details in your structured decision; the platform will record them in Activity logs rather than the shared conversation.\n\nReply with JSON only, without markdown fences, using one of these shapes:\n{"message":"progress update for Activity logs","statePatch":{"phase":"next phase"},"decision":{"type":"delegate","assignment":"specific work for the next specialist"}}\n{"message":"completion update for Activity logs","statePatch":{"phase":"complete"},"decision":{"type":"complete","summary":"final outcome and artifact locations, when applicable"}}`;
   }
 
   private delegationCount(database: Database, taskId: string): number {
@@ -400,6 +420,19 @@ export class TeamTaskService {
     }
     const result = leadDecisionSchema.safeParse(parsed);
     if (!result.success) throw new Error("Lead Agent returned an invalid delegation decision");
+    return result.data;
+  }
+
+  private parseSpecialistResult(output: string): SpecialistResult {
+    const trimmed = output.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new Error("Specialist returned invalid JSON");
+    }
+    const result = specialistResultSchema.safeParse(parsed);
+    if (!result.success) throw new Error("Specialist returned an invalid structured result");
     return result.data;
   }
 
@@ -465,13 +498,14 @@ export class TeamTaskService {
     assignment: string | null = null,
     attempt: number | null = null,
     statePatch: Record<string, JsonValue> | null = null,
+    chatContent: string | null = null,
   ): void {
     const sequence = database.teamTaskEvents
       .filter((event) => event.taskId === task.id)
       .reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1;
     database.teamTaskEvents.push({
       id: randomUUID(), taskId: task.id, sequence, type, agentId,
-      content, assignment, attempt, statePatch, createdAt: now(),
+      content, chatContent, assignment, attempt, statePatch, createdAt: now(),
     });
   }
 

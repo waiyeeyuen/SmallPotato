@@ -424,7 +424,8 @@ button {
   max-width: min(78%, 720px);
 }
 
-.team-message-lead {
+.team-message-lead,
+.team-message-objective {
   align-self: flex-end;
   flex-direction: row-reverse;
 }
@@ -442,7 +443,8 @@ button {
   font-weight: 800;
 }
 
-.team-message-lead .team-avatar {
+.team-message-lead .team-avatar,
+.team-message-objective .team-avatar {
   background: var(--purple-soft);
   color: var(--purple);
 }
@@ -451,7 +453,8 @@ button {
   min-width: 0;
 }
 
-.team-message-lead .team-message-body {
+.team-message-lead .team-message-body,
+.team-message-objective .team-message-body {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -485,7 +488,8 @@ button {
   padding: 12px 14px;
 }
 
-.team-message-lead .team-bubble {
+.team-message-lead .team-bubble,
+.team-message-objective .team-bubble {
   border-color: color-mix(in srgb, var(--purple) 26%, var(--line));
   border-radius: 16px 5px 16px 16px;
   background: var(--purple-soft);

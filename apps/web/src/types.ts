@@ -81,6 +81,7 @@ export interface TeamTaskEvent {
   type: string;
   agentId: string | null;
   content: string;
+  chatContent: string | null;
   assignment: string | null;
   attempt: number | null;
   statePatch: Record<string, JsonValue> | null;

@@ -63,6 +63,11 @@ const complete = (summary: string) => JSON.stringify({
   decision: { type: "complete", summary },
 });
 
+const specialist = (message: string, activity = "Returned the requested contribution.") => JSON.stringify({
+  message,
+  activity,
+});
+
 describe("TeamTaskService", () => {
   it("pauses an interrupted task on startup and releases its Agents", async () => {
     let rejectRun!: (reason: Error) => void;
@@ -121,9 +126,9 @@ describe("TeamTaskService", () => {
     const reviewer = await agents.createAgent({ name: "Reviewer" });
     runner.script.push(
       delegate("Build the requested artifact", { phase: "build" }),
-      "Built the artifact and ran its tests.",
+      specialist("The artifact is ready for review.", "Built the artifact and ran its tests."),
       delegate("Review the implementation", { phase: "review" }),
-      "Reviewed the artifact; it is ready.",
+      specialist("The artifact is ready.", "Reviewed the artifact; it is ready."),
       complete("Artifact built, tested, and reviewed."),
     );
 
@@ -184,7 +189,7 @@ describe("TeamTaskService", () => {
       new Error("still unavailable"),
       complete("This is too early."),
       delegate("Provide the second contribution"),
-      "Second contribution complete.",
+      specialist("Second contribution complete."),
       complete("Finished after every specialist was invoked."),
     );
 
@@ -216,7 +221,7 @@ describe("TeamTaskService", () => {
     const interruptedLead = new Promise<string>((resolve) => { releaseInterruptedLead = resolve; });
     runner.script.push(
       delegate("Provide the first contribution"),
-      "First contribution complete.",
+      specialist("First contribution complete."),
       interruptedLead,
     );
 
@@ -235,7 +240,7 @@ describe("TeamTaskService", () => {
 
     runner.script.push(
       delegate("Provide the second contribution"),
-      "Second contribution complete.",
+      specialist("Second contribution complete."),
       complete("Both contributions completed in order."),
     );
     await recovered.resumeTask(task.id);
@@ -255,19 +260,26 @@ describe("TeamTaskService", () => {
     const counterC = await agents.createAgent({ name: "Counter C" });
     for (let number = 10; number >= 1; number -= 1) {
       runner.script.push(delegate("Return only the number " + number, { currentNumber: number }));
-      runner.script.push(String(number));
+      runner.script.push(specialist(String(number), "Returned countdown value " + number + "."));
     }
     runner.script.push(complete("Countdown finished."));
     const task = await teamTasks.createTask({
-      objective: "Count down from 10 to 1 without gaps",
+      objective: "Count down from 10 to 1",
       leadAgentId: lead.id,
       specialistAgentIds: [counterA.id, counterB.id, counterC.id],
     });
     await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
-    const outputs = teamTasks.getEvents(task.id)
-      .filter((event) => event.type === "specialist_result")
-      .map((event) => Number(event.content));
+    const allEvents = teamTasks.getEvents(task.id);
+    const specialistEvents = allEvents
+      .filter((event) => event.type === "specialist_result");
+    const outputs = specialistEvents.map((event) => Number(event.chatContent));
     expect(outputs).toEqual([10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
+    expect(specialistEvents.map((event) => event.content)).toEqual(
+      Array.from({ length: 10 }, (_, index) => "Returned countdown value " + (10 - index) + "."),
+    );
+    expect(allEvents
+      .filter((event) => event.type !== "specialist_result")
+      .every((event) => event.chatContent === null)).toBe(true);
     expect(runner.requests.map((request) => request.agentId)).toEqual([
       lead.id, counterA.id,
       lead.id, counterB.id,
@@ -283,8 +295,11 @@ describe("TeamTaskService", () => {
     ]);
     expect(runner.requests[0]?.prompt).toContain("strict round-robin order");
     expect(runner.requests[1]?.prompt).toContain("return the requested result directly");
-    expect(runner.requests[1]?.prompt).toContain("Do not create a file or script merely to produce that result");
+    expect(runner.requests[0]?.prompt).toContain("do not ask specialists to create, edit, or persist files");
+    expect(runner.requests[1]?.prompt).toContain("Do not create, edit, or persist a file or script merely to produce that result");
+    expect(runner.requests[1]?.prompt).toContain("only when the objective or assignment explicitly requests a file");
     expect(runner.requests[1]?.prompt).toContain("When execution is explicitly requested, run the artifact");
+    expect(runner.requests[1]?.prompt).toContain("Put file operations, commands, verification, and other process detail in activity");
     expect(teamTasks.getTask(task.id).sharedState.currentNumber).toBe(1);
   });
 });

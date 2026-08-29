@@ -93,6 +93,7 @@ export interface TeamTaskEvent {
   type: TeamTaskEventType;
   agentId: string | null;
   content: string;
+  chatContent: string | null;
   assignment: string | null;
   attempt: number | null;
   statePatch: Record<string, JsonValue> | null;

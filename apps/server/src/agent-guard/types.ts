@@ -1,4 +1,7 @@
-export type GuardAction = "read" | "write" | "deploy";
+export type GuardAction =
+  | "read"
+  | "write"
+  | "deploy";
 
 export type GuardDecision =
   | "allow"

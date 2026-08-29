@@ -9,6 +9,11 @@ const policies: AgentPolicy[] = [
     resource: "project-alpha",
     allowedActions: ["read", "write"],
   },
+  {
+    agentId: "agent-a",
+    resource: "project-alpha-production",
+    allowedActions: ["deploy"],
+  },
 ];
 
 describe("AgentGuard policy engine", () => {

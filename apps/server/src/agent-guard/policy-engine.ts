@@ -10,14 +10,10 @@ export function evaluatePolicy(
   resource: string,
   action: GuardAction,
 ): PolicyResult {
-  // Sensitive production operations require a human.
-  if (resource.endsWith("-production") && action === "deploy") {
-    return {
-      decision: "require_approval",
-      reason: "Production deployment requires human approval",
-    };
-  }
-
+  /**
+   * First check whether the agent has any
+   * delegated authority over this resource.
+   */
   const policy = policies.find(
     (item) =>
       item.agentId === agentId &&
@@ -27,10 +23,14 @@ export function evaluatePolicy(
   if (!policy) {
     return {
       decision: "deny",
-      reason: "Agent has no delegated access to this resource",
+      reason:
+        "Agent has no delegated access to this resource",
     };
   }
 
+  /**
+   * Then check the requested action.
+   */
   if (!policy.allowedActions.includes(action)) {
     return {
       decision: "deny",
@@ -38,8 +38,27 @@ export function evaluatePolicy(
     };
   }
 
+  /**
+   * Sensitive operations require a human
+   * even if the agent has delegated authority.
+   */
+  if (
+    resource.endsWith("-production") &&
+    action === "deploy"
+  ) {
+    return {
+      decision: "require_approval",
+      reason:
+        "Production deployment requires human approval",
+    };
+  }
+
+  /**
+   * Otherwise allow it.
+   */
   return {
     decision: "allow",
-    reason: "Action permitted by delegated policy",
+    reason:
+      "Action permitted by delegated policy",
   };
 }

@@ -368,6 +368,17 @@ button {
   margin: 0;
 }
 
+.team-specialist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 240px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
 .team-agent-choice {
   flex-direction: row !important;
   align-items: center;
@@ -393,6 +404,17 @@ button {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.team-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .team-task-list button {
@@ -855,6 +877,96 @@ button {
   white-space: pre-wrap;
 }
 
+.team-markdown > :first-child {
+  margin-top: 0;
+}
+
+.team-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.team-markdown h1,
+.team-markdown h2,
+.team-markdown h3,
+.team-markdown h4 {
+  margin: 1em 0 .45em;
+  color: var(--ink);
+  line-height: 1.25;
+}
+
+.team-markdown h1 { font-size: 1.35rem; }
+.team-markdown h2 { font-size: 1.2rem; }
+.team-markdown h3 { font-size: 1.08rem; }
+.team-markdown h4 { font-size: 1rem; }
+
+.team-markdown p,
+.team-markdown ul,
+.team-markdown ol,
+.team-markdown blockquote,
+.team-markdown pre,
+.team-markdown table {
+  margin: 0 0 .85em;
+}
+
+.team-markdown ul,
+.team-markdown ol {
+  padding-left: 1.4em;
+}
+
+.team-markdown li + li {
+  margin-top: .25em;
+}
+
+.team-markdown table {
+  display: block;
+  max-width: 100%;
+  border-collapse: collapse;
+  overflow-x: auto;
+}
+
+.team-markdown th,
+.team-markdown td {
+  border: 1px solid var(--line);
+  padding: 7px 9px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.team-markdown th {
+  background: color-mix(in srgb, var(--purple) 8%, var(--paper));
+  font-weight: 750;
+}
+
+.team-markdown blockquote {
+  border-left: 3px solid var(--line-strong);
+  color: var(--muted);
+  padding-left: 10px;
+}
+
+.team-markdown code {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  padding: .1em .3em;
+}
+
+.team-markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 8%, var(--paper));
+  padding: 10px;
+}
+
+.team-markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.team-markdown a {
+  color: var(--purple);
+}
+
 .team-message-assignment,
 .team-message-completion {
   margin-top: 10px;
@@ -947,18 +1059,41 @@ button {
 
 .team-log > summary {
   display: grid;
-  grid-template-columns: max-content max-content max-content minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
   gap: 8px;
   align-items: center;
   color: var(--muted);
   font-size: 12px;
 }
 
+.team-log > summary::before {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.team-log-actor {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.team-log > summary time {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  white-space: nowrap;
+}
+
 .team-log > summary strong {
   color: var(--ink);
 }
 
-.team-log > summary span {
+.team-log > summary .team-log-preview {
+  grid-column: 2 / -1;
+  grid-row: 2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1006,8 +1141,16 @@ button {
   .team-live-status { align-items: flex-start; flex-wrap: wrap; }
   .team-live-status > div:nth-child(2) span { white-space: normal; }
   .team-progress-meta { width: 100%; text-align: left; }
-  .team-log > summary { grid-template-columns: max-content minmax(0, 1fr); }
-  .team-log > summary span { grid-column: 2 / -1; }
+}
+
+/* Team Tasks uses one compact type scale for every section and body element. */
+.team-view,
+.team-view * {
+  font-size: 8px !important;
+}
+
+.team-view :where(h1, h2, h3, h4, legend, .eyebrow, .team-logs > summary > span) {
+  font-size: 15px !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

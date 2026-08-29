@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import { MarkdownContent } from "./MarkdownContent";
 import type { Agent, TeamTask, TeamTaskEvent } from "./types";
 
 interface Props {
@@ -274,20 +275,22 @@ export function TeamTaskView({
                 </label>
                 <fieldset>
                   <legend>Specialist pool</legend>
-                  {agents.filter((agent) => agent.id !== leadId).map((agent) => (
-                    <label className="team-agent-choice" key={agent.id}>
-                      <input
-                        type="checkbox"
-                        checked={specialistIds.includes(agent.id)}
-                        disabled={agent.status !== "ready" || Boolean(agent.activeTeamTaskId)}
-                        onChange={() => toggleSpecialist(agent.id)}
-                      />
-                      <span>
-                        <strong>{agent.name}</strong>
-                        <small>{specialistIds.includes(agent.id) ? "Available to Lead · " : ""}{agent.description || agent.status}</small>
-                      </span>
-                    </label>
-                  ))}
+                  <div className="team-specialist-list">
+                    {agents.filter((agent) => agent.id !== leadId).map((agent) => (
+                      <label className="team-agent-choice" key={agent.id}>
+                        <input
+                          type="checkbox"
+                          checked={specialistIds.includes(agent.id)}
+                          disabled={agent.status !== "ready" || Boolean(agent.activeTeamTaskId)}
+                          onChange={() => toggleSpecialist(agent.id)}
+                        />
+                        <span>
+                          <strong>{agent.name}</strong>
+                          <small>{specialistIds.includes(agent.id) ? "Available to Lead · " : ""}{agent.description || agent.status}</small>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
                 </fieldset>
                 <button className="button button-primary" disabled={submitting || !objective.trim() || !leadId || specialistIds.length === 0}>
                   {submitting ? <span className="spinner" aria-label="Starting" /> : "Start Team Task"}
@@ -300,12 +303,14 @@ export function TeamTaskView({
           {tasks.length > 0 && (
             <div className="team-task-list">
               <span className="eyebrow">Task history</span>
-              {tasks.map((item) => (
-                <button className={item.id === selectedId ? "selected" : ""} key={item.id} onClick={() => setSelectedId(item.id)}>
-                  <strong>{oneLine(item.objective)}</strong>
-                  <span><i className={`history-dot history-dot-${item.status}`} />{item.status} · {item.turnCount}/{item.maxTurns} turns</span>
-                </button>
-              ))}
+              <div className="team-history-list">
+                {tasks.map((item) => (
+                  <button className={item.id === selectedId ? "selected" : ""} key={item.id} onClick={() => setSelectedId(item.id)}>
+                    <strong>{oneLine(item.objective)}</strong>
+                    <span><i className={`history-dot history-dot-${item.status}`} />{item.status} · {item.turnCount}/{item.maxTurns} turns</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </aside>
@@ -375,7 +380,7 @@ export function TeamTaskView({
               {task.completionSummary && (
                 <div className="team-complete">
                   <span>✓</span>
-                  <div><small>Lead synthesis</small><h3>Objective completed</h3><p>{task.completionSummary}</p></div>
+                  <div><small>Lead synthesis</small><h3>Objective completed</h3><MarkdownContent>{task.completionSummary}</MarkdownContent></div>
                 </div>
               )}
 
@@ -384,7 +389,7 @@ export function TeamTaskView({
                   <div className="team-avatar" aria-hidden="true">Y</div>
                   <div className="team-message-body">
                     <div className="team-message-meta"><strong>You</strong><span>Objective</span><time>{time(task.createdAt)}</time></div>
-                    <div className="team-bubble"><p>{task.objective}</p></div>
+                    <div className="team-bubble"><MarkdownContent>{task.objective}</MarkdownContent></div>
                   </div>
                 </article>
 
@@ -393,7 +398,7 @@ export function TeamTaskView({
                   if (item.type === "specialist_result" && item.chatContent) {
                     return <article className="team-message team-message-specialist" key={item.id}>
                       <div className="team-avatar" aria-hidden="true">{initials(agentName)}</div>
-                      <div className="team-message-body"><div className="team-message-meta"><strong>{agentName}</strong><span>Specialist</span><time>{time(item.createdAt)}</time></div><div className="team-bubble"><p>{item.chatContent}</p></div></div>
+                      <div className="team-message-body"><div className="team-message-meta"><strong>{agentName}</strong><span>Specialist</span><time>{time(item.createdAt)}</time></div><div className="team-bubble"><MarkdownContent>{item.chatContent}</MarkdownContent></div></div>
                     </article>;
                   }
                   if (["turn_retry", "turn_failed", "task_paused", "task_resumed", "task_stopped"].includes(item.type)) {
@@ -411,7 +416,11 @@ export function TeamTaskView({
                   {events.map((item) => {
                     const actor = item.agentId ? agentMap.get(item.agentId)?.name ?? "Unknown Agent" : "Platform";
                     return <details className="team-log" key={item.id}>
-                      <summary><strong>#{item.sequence}</strong><strong>{actor}</strong><time>{time(item.createdAt)}</time><span>{oneLine(item.assignment ?? item.content)}</span></summary>
+                      <summary>
+                        <span className="team-log-actor"><strong>#{item.sequence}</strong><strong>{actor}</strong></span>
+                        <time>{time(item.createdAt)}</time>
+                        <span className="team-log-preview">{oneLine(item.assignment ?? item.content)}</span>
+                      </summary>
                       <div className="team-log-detail">
                         <dl><div><dt>Event</dt><dd>{item.type}</dd></div>{item.attempt && <div><dt>Attempt</dt><dd>{item.attempt}</dd></div>}</dl>
                         <p>{item.content}</p>

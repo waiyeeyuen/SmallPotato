@@ -63,12 +63,6 @@ detect_engine() {
   return 1
 }
 
-if [[ -z "${ARK_API_KEY:-}" || -z "${ARK_MODEL:-}" ]]; then
-  log "ARK_API_KEY and ARK_MODEL are required."
-  log "Example: ARK_API_KEY=key ARK_MODEL=ep-id ./scripts/start-local-poc.sh"
-  exit 2
-fi
-
 command -v node >/dev/null 2>&1 || {
   log "Node.js 22+ is required to run the local control plane."
   exit 2
@@ -77,6 +71,53 @@ command -v node >/dev/null 2>&1 || {
 node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
 if (( node_major < 22 )); then
   log "Node.js 22+ is required; found $(node --version)."
+  exit 2
+fi
+
+# Keep command-line environment variables authoritative, but make the common
+# `cp .env.example .env && npm run poc` workflow work as expected. Use Node's
+# dotenv parser instead of sourcing the file as shell code: valid dotenv values
+# such as CONTAINER_RUNTIME_APT_PACKAGES contain unquoted spaces.
+if [[ -f .env ]]; then
+  while IFS= read -r -d '' assignment; do
+    export "$assignment"
+  done < <(node -e '
+    const fs = require("node:fs");
+    const { parseEnv } = require("node:util");
+    const values = parseEnv(fs.readFileSync(process.argv[1], "utf8"));
+    for (const key of ["ARK_API_KEY", "ARK_MODEL", "ARK_BASE_URL"]) {
+      const value = process.env[key] ?? values[key];
+      if (value !== undefined) process.stdout.write(`${key}=${value}\0`);
+    }
+  ' "$repo_dir/.env")
+fi
+
+if [[ -z "${ARK_API_KEY:-}" || -z "${ARK_MODEL:-}" ]]; then
+  log "ARK_API_KEY and ARK_MODEL are required."
+  log "Set them in .env or pass them to npm run poc."
+  exit 2
+fi
+
+local_port="${PORT:-3000}"
+if node -e '
+  const port = process.argv[1];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 750);
+  fetch(`http://127.0.0.1:${port}/api/health`, { signal: controller.signal })
+    .then((response) => response.ok ? response.json() : Promise.reject())
+    .then((body) => process.exit(body?.service === "volc-agent-launchpad" ? 0 : 1))
+    .catch(() => process.exit(1))
+    .finally(() => clearTimeout(timer));
+' "$local_port"; then
+  log "Agent Launchpad is already running at http://localhost:$local_port"
+  log "Use the existing browser session, or stop its terminal before rebuilding."
+  exit 0
+fi
+
+if command -v lsof >/dev/null 2>&1 \
+  && lsof -nP -iTCP:"$local_port" -sTCP:LISTEN >/dev/null 2>&1; then
+  log "Port $local_port is already used by another process."
+  log "Stop that process or run PORT=<another-port> npm run poc."
   exit 2
 fi
 

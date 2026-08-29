@@ -4,6 +4,7 @@ export type MessageRole = "user" | "assistant";
 export type TeamTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
 export type TeamTaskEventType =
   | "task_started"
+  | "turn_started"
   | "lead_decision"
   | "delegated"
   | "specialist_result"
@@ -74,6 +75,8 @@ export interface TeamTask {
   workspacePath: string;
   currentAgentId: string | null;
   currentAssignment: string | null;
+  assignmentQueue: TeamAssignment[];
+  activeTurnStartedAt: string | null;
   turnCount: number;
   maxTurns: number;
   sharedState: Record<string, JsonValue>;
@@ -84,6 +87,12 @@ export interface TeamTask {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+}
+
+export interface TeamAssignment {
+  id: string;
+  agentId: string;
+  assignment: string;
 }
 
 export interface TeamTaskEvent {

@@ -11,6 +11,25 @@ const emptyDatabase = (): Database => ({
   teamTaskEvents: [],
 });
 
+function normalizeDatabase(database: Database): Database {
+  return {
+    ...database,
+    agents: database.agents.map((agent) => ({
+      ...agent,
+      activeTeamTaskId: agent.activeTeamTaskId ?? null,
+    })),
+    teamTasks: database.teamTasks.map((task) => ({
+      ...task,
+      assignmentQueue: task.assignmentQueue ?? [],
+      activeTurnStartedAt: task.activeTurnStartedAt ?? null,
+    })),
+    teamTaskEvents: database.teamTaskEvents.map((event) => ({
+      ...event,
+      chatContent: event.chatContent ?? null,
+    })),
+  };
+}
+
 interface LegacyDatabase {
   version: 1;
   agents: Array<Omit<Agent, "activeTeamTaskId">>;
@@ -20,6 +39,18 @@ interface LegacyDatabase {
 
 interface NewerDatabase extends Omit<Database, "version"> {
   version: 3 | 4;
+}
+
+interface AgentGuardDatabase {
+  version: 3;
+  agents: Array<Omit<Agent, "activeTeamTaskId">>;
+  messages: Message[];
+  runs: AgentRun[];
+  users: unknown[];
+  sessions: unknown[];
+  resources: unknown[];
+  grants: unknown[];
+  decisions: unknown[];
 }
 
 export class JsonStore {
@@ -32,7 +63,11 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database | LegacyDatabase | NewerDatabase;
+      const parsed = JSON.parse(raw) as
+        | Database
+        | LegacyDatabase
+        | NewerDatabase
+        | AgentGuardDatabase;
       if (!Array.isArray(parsed.agents)) {
         throw new Error("Unsupported database format");
       }
@@ -53,16 +88,41 @@ export class JsonStore {
         (parsed.version === 2 || parsed.version === 3 || parsed.version === 4) &&
         Array.isArray(parsed.messages) &&
         Array.isArray(parsed.runs) &&
-        Array.isArray(parsed.teamTasks) &&
-        Array.isArray(parsed.teamTaskEvents)
+        Array.isArray((parsed as NewerDatabase).teamTasks) &&
+        Array.isArray((parsed as NewerDatabase).teamTaskEvents)
       ) {
+        const teamDatabase = parsed as Database | NewerDatabase;
         if (parsed.version === 2) {
-          this.data = parsed;
+          this.data = normalizeDatabase(teamDatabase as Database);
         } else {
           await copyFile(this.filePath, this.filePath + ".v" + parsed.version + ".backup");
-          this.data = { ...parsed, version: 2 };
+          this.data = normalizeDatabase({ ...teamDatabase, version: 2 } as Database);
           await this.persist(this.data);
         }
+      } else if (
+        parsed.version === 3 &&
+        Array.isArray(parsed.messages) &&
+        Array.isArray(parsed.runs) &&
+        Array.isArray((parsed as AgentGuardDatabase).users) &&
+        Array.isArray((parsed as AgentGuardDatabase).resources)
+      ) {
+        // The AgentGuard branch also used version 3 for a different schema.
+        // Preserve its full database, then carry the shared Agent history into
+        // this branch's Team Task schema.
+        const agentGuardDatabase = parsed as AgentGuardDatabase;
+        await copyFile(this.filePath, this.filePath + ".v3-agentguard.backup");
+        this.data = {
+          version: 2,
+          agents: agentGuardDatabase.agents.map((agent) => ({
+            ...agent,
+            activeTeamTaskId: null,
+          })),
+          messages: agentGuardDatabase.messages,
+          runs: agentGuardDatabase.runs,
+          teamTasks: [],
+          teamTaskEvents: [],
+        };
+        await this.persist(this.data);
       } else {
         throw new Error("Unsupported database format");
       }

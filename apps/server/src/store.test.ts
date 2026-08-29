@@ -38,6 +38,8 @@ describe("JsonStore", () => {
     await store.initialize();
     expect(store.snapshot().version).toBe(2);
     expect((store.snapshot().teamTasks[0] as unknown as { mode: string }).mode).toBe("council");
+    expect(store.snapshot().teamTasks[0]?.assignmentQueue).toEqual([]);
+    expect(store.snapshot().teamTasks[0]?.activeTurnStartedAt).toBeNull();
     expect(JSON.parse(await readFile(filePath + ".v4.backup", "utf8")).version).toBe(4);
     expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(2);
   });
@@ -71,6 +73,36 @@ describe("JsonStore", () => {
     expect(database.teamTasks).toEqual([]);
     expect(database.teamTaskEvents).toEqual([]);
     expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(2);
+  });
+
+  it("backs up AgentGuard version 3 data and preserves shared Agent history", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const timestamp = new Date().toISOString();
+    await writeFile(filePath, JSON.stringify({
+      version: 3,
+      users: [{ id: "user-1" }], sessions: [], resources: [], grants: [], decisions: [],
+      agents: [{
+        id: "agent-1", ownerUserId: "user-1", principalId: "principal-1",
+        name: "Lead", description: "", instructions: "", status: "ready",
+        workspacePath: "/tmp/agent-1", codexThreadId: null, lastError: null,
+        createdAt: timestamp, updatedAt: timestamp,
+      }],
+      messages: [{ id: "message-1", agentId: "agent-1", runId: "run-1", role: "user", content: "hello", createdAt: timestamp }],
+      runs: [{ id: "run-1", agentId: "agent-1", status: "completed", prompt: "hello", output: "hi", error: null, usage: null, resourceId: null, policyDecisionId: null, startedAt: timestamp, completedAt: timestamp, createdAt: timestamp }],
+    }));
+
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const database = store.snapshot();
+    expect(database.version).toBe(2);
+    expect(database.agents[0]?.activeTeamTaskId).toBeNull();
+    expect(database.messages).toHaveLength(1);
+    expect(database.runs).toHaveLength(1);
+    expect(database.teamTasks).toEqual([]);
+    expect(database.teamTaskEvents).toEqual([]);
+    expect(JSON.parse(await readFile(filePath + ".v3-agentguard.backup", "utf8")).version).toBe(3);
   });
 
   it("does not publish a mutation in memory when persistence fails", async () => {

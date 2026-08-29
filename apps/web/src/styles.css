@@ -26,6 +26,24 @@ body {
   min-height: 100vh;
 }
 
+.skip-link {
+  position: fixed;
+  z-index: 1000;
+  top: 10px;
+  left: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--purple);
+  color: white;
+  font-weight: 700;
+  transform: translateY(-160%);
+  transition: transform 140ms ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
 .auth-screen {
   min-height: 100vh;
   display: grid;
@@ -204,7 +222,7 @@ button {
 }
 
 .team-nav-button.selected {
-  color: var(--ink);
+  color: #f5f3ed;
   background: #32322e;
   border-color: var(--purple);
 }
@@ -227,6 +245,47 @@ button {
 .team-summary p,
 .team-empty p {
   color: var(--muted);
+}
+
+.team-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.team-heading h1 {
+  margin-top: 5px;
+  font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  font-size: clamp(30px, 4vw, 44px);
+  letter-spacing: -.04em;
+}
+
+.team-heading p {
+  max-width: 720px;
+  margin-top: 8px;
+  line-height: 1.55;
+}
+
+.team-heading-metric {
+  display: grid;
+  min-width: 100px;
+  padding: 12px 15px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--paper) 82%, transparent);
+  text-align: right;
+}
+
+.team-heading-metric strong {
+  font-size: 24px;
+}
+
+.team-heading-metric span {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
 }
 
 .team-grid {
@@ -258,6 +317,43 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.team-panel-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.team-panel-title h2 {
+  margin-top: 4px;
+  font-size: 19px;
+}
+
+.team-panel-title > span {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.team-form-note {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.team-active-lock {
+  align-items: flex-start;
+  border: 1px solid color-mix(in srgb, var(--purple) 25%, var(--line));
+  border-radius: 12px;
+  background: var(--purple-soft);
+  padding: 12px;
+}
+
+.team-active-lock p {
+  margin: 0;
 }
 
 .team-create textarea,
@@ -317,6 +413,36 @@ button {
   display: block;
 }
 
+.history-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.history-dot-running,
+.history-dot-completed {
+  background: var(--green);
+}
+
+.history-dot-paused,
+.history-dot-failed {
+  background: var(--red);
+}
+
+.team-empty-detail {
+  min-height: 520px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.team-empty-detail .welcome-orbit {
+  margin-bottom: 6px;
+}
+
 .team-task-list button span {
   margin-top: 4px;
   color: var(--muted);
@@ -342,6 +468,68 @@ button {
   color: var(--muted);
   font-size: 12px;
   padding: 5px 9px;
+}
+
+.team-participant-rail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.team-participant {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--paper) 92%, var(--purple-soft));
+}
+
+.team-participant.working {
+  border-color: color-mix(in srgb, var(--purple) 48%, var(--line));
+  box-shadow: inset 3px 0 var(--purple);
+}
+
+.team-participant .team-avatar {
+  width: 34px;
+  height: 34px;
+}
+
+.team-participant > span:nth-child(2),
+.team-participant strong,
+.team-participant small {
+  display: block;
+  min-width: 0;
+}
+
+.team-participant strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-participant small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.participant-check {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--purple-soft);
+  color: var(--purple);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .team-status {
@@ -375,6 +563,82 @@ button {
   padding: 10px 12px;
 }
 
+.team-live-pulse {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 20px;
+  height: 18px;
+}
+
+.team-live-pulse i {
+  width: 4px;
+  height: 7px;
+  border-radius: 3px;
+  background: var(--purple);
+  animation: team-wave 900ms ease-in-out infinite alternate;
+}
+
+.team-live-pulse i:nth-child(2) { height: 14px; animation-delay: -300ms; }
+.team-live-pulse i:nth-child(3) { height: 10px; animation-delay: -600ms; }
+
+@keyframes team-wave {
+  to { transform: scaleY(.45); opacity: .55; }
+}
+
+.team-live-status > div:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.team-live-status > div:nth-child(2) span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-progress-meta {
+  display: grid;
+  gap: 3px;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+}
+
+.team-queue {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 18px;
+  padding: 12px;
+  border: 1px dashed color-mix(in srgb, var(--purple) 35%, var(--line));
+  border-radius: 12px;
+}
+
+.team-queue > span:not(.eyebrow) {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.team-queue b {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--purple-soft);
+  color: var(--purple);
+  font-size: 10px;
+}
+
 .team-live-status > span:last-child {
   min-width: 0;
   color: var(--muted);
@@ -402,10 +666,100 @@ button {
 }
 
 .team-complete {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
   border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
   border-radius: 12px;
   padding: 14px;
   margin-bottom: 16px;
+  background: color-mix(in srgb, var(--green) 6%, var(--paper));
+}
+
+.team-complete > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--green);
+  color: white;
+}
+
+.team-complete small {
+  color: var(--green);
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.team-complete h3 {
+  margin: 2px 0 6px;
+}
+
+.team-complete p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.team-handoff {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) max-content;
+  align-self: center;
+  width: min(88%, 760px);
+  gap: 2px 7px;
+  padding: 9px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.team-handoff > span {
+  grid-row: 1 / 3;
+  color: var(--purple);
+  font-size: 18px;
+}
+
+.team-handoff strong {
+  color: var(--ink);
+}
+
+.team-handoff p {
+  grid-column: 2 / -1;
+  margin: 0;
+}
+
+.team-handoff time {
+  opacity: .7;
+}
+
+.team-typing {
+  display: flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.team-typing > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--purple);
+  animation: typing-hop 900ms ease-in-out infinite alternate;
+}
+
+.team-typing > span:nth-child(2) { animation-delay: 150ms; }
+.team-typing > span:nth-child(3) { animation-delay: 300ms; }
+
+.team-typing small {
+  margin-left: 5px;
+}
+
+@keyframes typing-hop {
+  to { transform: translateY(-4px); opacity: .45; }
 }
 
 .team-chat {
@@ -650,9 +1004,19 @@ button {
   .team-grid { grid-template-columns: 1fr; }
   .team-message { max-width: 92%; }
   .team-live-status { align-items: flex-start; flex-wrap: wrap; }
-  .team-live-status > span:last-child { width: 100%; white-space: normal; }
+  .team-live-status > div:nth-child(2) span { white-space: normal; }
+  .team-progress-meta { width: 100%; text-align: left; }
   .team-log > summary { grid-template-columns: max-content minmax(0, 1fr); }
   .team-log > summary span { grid-column: 2 / -1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
 }
 
 .create-button span {

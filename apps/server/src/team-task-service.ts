@@ -18,8 +18,10 @@ import type {
 import { WorkspaceManager } from "./workspace.js";
 
 const MAX_TURNS = 30;
+const MAX_COLLABORATION_ROUNDS = 12;
 const MAX_CONTRIBUTION_LENGTH = 20_000;
-const MAX_HISTORY_LENGTH = 60_000;
+const MAX_HISTORY_LENGTH = 32_000;
+const MAX_HISTORY_EVENTS = 80;
 const now = () => new Date().toISOString();
 
 const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
@@ -39,6 +41,7 @@ const leadDecisionSchema = z.object({
   decision: z.discriminatedUnion("type", [
     z.object({
       type: z.literal("delegate"),
+      agentId: z.string().uuid(),
       assignment: z.string().trim().min(1).max(10_000),
     }),
     z.object({
@@ -73,6 +76,8 @@ export class TeamTaskService {
         if (task.status !== "running") continue;
         task.status = "paused";
         task.currentAgentId = null;
+        task.assignmentQueue = [];
+        task.activeTurnStartedAt = null;
         task.lastError = "Server restarted while this Team Task was active";
         task.updatedAt = now();
         this.releaseAgents(database, task);
@@ -128,7 +133,9 @@ export class TeamTaskService {
       status: "running",
       workspacePath: this.workspaces.teamTaskWorkspacePath(id),
       currentAgentId: input.leadAgentId,
-      currentAssignment: "Review the objective and delegate the first useful assignment.",
+      currentAssignment: "Review the objective and dynamically select the most relevant first specialist turn.",
+      assignmentQueue: [],
+      activeTurnStartedAt: null,
       turnCount: 0,
       maxTurns: MAX_TURNS,
       sharedState: { phase: "starting" },
@@ -168,6 +175,8 @@ export class TeamTaskService {
       stored.status = "stopped";
       stored.currentAgentId = null;
       stored.currentAssignment = null;
+      stored.assignmentQueue = [];
+      stored.activeTurnStartedAt = null;
       stored.completedAt = now();
       stored.updatedAt = stored.completedAt;
       this.releaseAgents(database, stored);
@@ -190,6 +199,8 @@ export class TeamTaskService {
       stored.status = "running";
       stored.currentAgentId = stored.leadAgentId;
       stored.currentAssignment = "Review the interruption and decide how the team should continue.";
+      stored.assignmentQueue = [];
+      stored.activeTurnStartedAt = null;
       stored.lastError = null;
       stored.updatedAt = now();
       this.addEvent(database, stored, "task_resumed", null, "Team Task resumed through the Lead");
@@ -250,7 +261,17 @@ export class TeamTaskService {
         const stored = this.findTask(database, task.id);
         if (stored.status !== "running" || stored.currentAgentId !== agent.id) return false;
         stored.turnCount += 1;
+        stored.activeTurnStartedAt = now();
         stored.updatedAt = now();
+        this.addEvent(
+          database,
+          stored,
+          "turn_started",
+          agent.id,
+          agent.name + " started a coordinator turn.",
+          stored.currentAssignment,
+          attempt,
+        );
         return true;
       });
       if (!mayRun) return null;
@@ -266,8 +287,18 @@ export class TeamTaskService {
         }
         const decision = isLead ? this.parseLeadDecision(result.output) : null;
         const specialistResult = isLead ? null : this.parseSpecialistResult(result.output);
-        if (decision?.decision.type === "complete" && !this.allSpecialistsInvoked(task)) {
-          throw new Error("Lead cannot complete the Team Task before every selected specialist has been invoked");
+        if (decision?.decision.type === "delegate") {
+          this.validateDelegation(task, decision.decision.agentId);
+          if (this.specialistContributionCount(task.id) >= MAX_COLLABORATION_ROUNDS) {
+            throw new Error("The collaboration round limit was reached; the Lead must complete with the available evidence");
+          }
+        }
+        if (decision?.decision.type === "complete" && !this.minimumCollaborationReached(task)) {
+          const minimum = Math.min(2, task.specialistAgentIds.length);
+          throw new Error(
+            "Lead cannot complete the Team Task before " + minimum +
+              " distinct specialist" + (minimum === 1 ? " has" : "s have") + " contributed",
+          );
         }
         return { result, decision, specialistResult };
       } catch (error) {
@@ -288,8 +319,11 @@ export class TeamTaskService {
       await this.store.mutate((database) => {
         const task = this.findTask(database, initialTask.id);
         this.addEvent(database, task, "turn_failed", agent.id, lastError, task.currentAssignment, 2);
+        task.activeTurnStartedAt = null;
         task.currentAgentId = task.leadAgentId;
-        task.currentAssignment = agent.name + " could not complete the assignment. Choose how to continue.";
+        task.currentAssignment = agent.name +
+          " could not complete the assignment. Review the failure and dynamically choose the best next step.";
+        task.assignmentQueue = [];
         task.lastError = lastError;
         task.updatedAt = now();
       });
@@ -305,6 +339,7 @@ export class TeamTaskService {
   ): Promise<void> {
     await this.store.mutate((database) => {
       const task = this.findRunningTask(database, taskId, leadAgentId);
+      task.activeTurnStartedAt = null;
       task.threadIds[leadAgentId] = result.threadId;
       Object.assign(task.sharedState, response.statePatch);
       if (Object.keys(response.statePatch).length > 0) task.stateVersion += 1;
@@ -313,6 +348,7 @@ export class TeamTaskService {
         task.status = "completed";
         task.currentAgentId = null;
         task.currentAssignment = null;
+        task.assignmentQueue = [];
         task.completionSummary = response.decision.summary;
         task.completedAt = now();
         task.updatedAt = task.completedAt;
@@ -321,18 +357,18 @@ export class TeamTaskService {
         return;
       }
       const delegation = response.decision;
-      const specialistId = this.nextSpecialistId(database, task);
-      task.currentAgentId = specialistId;
+      task.currentAgentId = delegation.agentId;
       task.currentAssignment = delegation.assignment;
+      task.assignmentQueue = [];
       task.lastError = null;
       task.updatedAt = now();
-      const specialist = database.agents.find((agent) => agent.id === specialistId);
+      const specialist = database.agents.find((agent) => agent.id === delegation.agentId);
       this.addEvent(
         database,
         task,
         "delegated",
         leadAgentId,
-        "Delegated the next assignment to " + (specialist?.name ?? "the selected specialist") + ".",
+        "Selected " + (specialist?.name ?? "the specialist") + " for the next collaborative turn.",
         delegation.assignment,
       );
     });
@@ -347,10 +383,12 @@ export class TeamTaskService {
     await this.store.mutate((database) => {
       const task = this.findRunningTask(database, taskId, agentId);
       const assignment = task.currentAssignment;
+      task.activeTurnStartedAt = null;
       task.threadIds[agentId] = result.threadId;
       this.addEvent(database, task, "specialist_result", agentId, response.activity, assignment, null, null, response.message);
       task.currentAgentId = task.leadAgentId;
-      task.currentAssignment = "Review the specialist result and decide the next step.";
+      task.currentAssignment = "Review the latest contribution in the shared conversation and dynamically choose the next specialist or complete.";
+      task.assignmentQueue = [];
       task.lastError = null;
       task.updatedAt = now();
     });
@@ -364,11 +402,25 @@ export class TeamTaskService {
       .map((item) => "- " + item.name + " (" + item.id + "): " + (item.description || "No description"))
       .join("\n");
     const history = database.teamTaskEvents
-      .filter((event) => event.taskId === task.id)
+      .filter((event) => event.taskId === task.id && event.type !== "turn_started")
       .sort((left, right) => left.sequence - right.sequence)
-      .map((event) => "#" + event.sequence + " [" + event.type + "] "
-        + (event.chatContent ? "Visible message: " + event.chatContent + "\nActivity: " : "")
-        + event.content)
+      .slice(-MAX_HISTORY_EVENTS)
+      .map((event) => {
+        const actor = event.agentId
+          ? database.agents.find((item) => item.id === event.agentId)?.name ?? "Unknown Agent"
+          : "Coordinator";
+        const role = event.agentId === task.leadAgentId
+          ? "Lead"
+          : event.agentId && task.specialistAgentIds.includes(event.agentId)
+            ? "Specialist"
+            : "System";
+        return [
+          "#" + event.sequence + " [" + event.type + "] " + actor + " (" + role + ")",
+          event.assignment ? "Assignment: " + event.assignment : "",
+          event.chatContent ? "Conversation message: " + event.chatContent : "",
+          "Activity: " + event.content,
+        ].filter(Boolean).join("\n");
+      })
       .join("\n")
       .slice(-MAX_HISTORY_LENGTH);
     const identity = [
@@ -383,31 +435,53 @@ export class TeamTaskService {
       "Current assignment: " + (task.currentAssignment ?? "None"),
       "Shared state version " + task.stateVersion + ": " + JSON.stringify(task.sharedState),
       "Participants:\n" + participants,
-      "Shared event history:\n" + (history || "No earlier events"),
+      "Shared conversation transcript, oldest to newest:\n" + (history || "No earlier turns"),
     ].join("\n\n");
     if (!isLead) {
-      return common + `\n\nComplete exactly the current assignment. The shared workspace being available does not imply that you should create an artifact:\n- For a direct conversational action, return the requested result directly. Do not create, edit, or persist a file or script merely to produce that result.\n- Create code or another workspace artifact only when the objective or assignment explicitly requests a file, implementation, or persisted deliverable.\n- When execution is explicitly requested, run the artifact, verify it, and record the actual output in activity.\n- Put only the concise contribution that belongs in the shared conversation in message. Put file operations, commands, verification, and other process detail in activity.\nDo not choose the next Agent. Reply with JSON only, without markdown fences, using this shape:\n{"message":"concise chat-visible contribution","activity":"operational result for the Lead and Activity logs"}`;
+      return common + `\n\nAct as one turn in a continuing multi-Agent conversation, not as an isolated solver. Complete exactly the current assignment and use the transcript above as authoritative context:\n- Explicitly build on, refine, test, or challenge the latest relevant contribution instead of repeating it.\n- Advance only the next useful step. Do not restart the objective from scratch or produce a premature final synthesis unless the assignment asks for one.\n- For a direct conversational action, return the requested result directly. Do not create, edit, or persist a file or script merely to produce that result.\n- Create code or another workspace artifact only when the objective or assignment explicitly requests a file, implementation, or persisted deliverable.\n- When execution is explicitly requested, inspect the existing shared workspace, run the artifact, verify it, and record the actual output in activity.\n- Put only the concise contribution that belongs in the shared conversation in message. Put file operations, commands, verification, and other process detail in activity.\nDo not choose the next Agent. Reply with JSON only, without markdown fences, using this shape:\n{"message":"concise contribution that responds to the shared conversation","activity":"operational result for the Lead and Activity logs"}`;
     }
-    const nextSpecialist = database.agents.find((item) => item.id === this.nextSpecialistId(database, task));
-    const remainingInvocations = Math.max(0, task.specialistAgentIds.length - this.delegationCount(database, task.id));
-    return common + `\n\nYou are the Lead Agent. The coordinator, not you, selects specialists in strict round-robin order. Your next delegated assignment will go to ${nextSpecialist?.name ?? "the next specialist"}. Every selected specialist must be invoked before completion${remainingInvocations > 0 ? `; ${remainingInvocations} initial specialist invocation(s) remain` : ""}.\n\nMake each assignment specific to that specialist and faithful to the objective. For collaborative sequences such as a countdown, delegate exactly one atomic visible contribution per turn (for example, one number), use shared state to track progress, and continue until the entire sequence is complete. For conversational objectives, request the literal result and do not ask specialists to create, edit, or persist files. Request code, files, workspace inspection, or execution only when the objective explicitly calls for an implementation or persisted deliverable. Keep delegation and process details in your structured decision; the platform will record them in Activity logs rather than the shared conversation.\n\nReply with JSON only, without markdown fences, using one of these shapes:\n{"message":"progress update for Activity logs","statePatch":{"phase":"next phase"},"decision":{"type":"delegate","assignment":"specific work for the next specialist"}}\n{"message":"completion update for Activity logs","statePatch":{"phase":"complete"},"decision":{"type":"complete","summary":"final outcome and artifact locations, when applicable"}}`;
+    const contributedIds = this.contributedSpecialistIds(task.id);
+    const collaborationRounds = this.specialistContributionCount(task.id);
+    const minimumContributors = Math.min(2, task.specialistAgentIds.length);
+    const remainingRequiredContributors = Math.max(0, minimumContributors - contributedIds.size);
+    const specialistCatalog = task.specialistAgentIds
+      .map((id) => database.agents.find((item) => item.id === id))
+      .filter((item): item is Agent => Boolean(item))
+      .map((item) => `- ${item.name}: ${item.id} — ${item.description || "No description"}${contributedIds.has(item.id) ? " (has contributed)" : ""}`)
+      .join("\n");
+    const stoppingInstruction = collaborationRounds >= MAX_COLLABORATION_ROUNDS
+      ? `The ${MAX_COLLABORATION_ROUNDS}-round collaboration limit has been reached. You must complete now using the best available evidence.`
+      : `${MAX_COLLABORATION_ROUNDS - collaborationRounds} specialist conversation turn(s) remain before the hard collaboration limit.`;
+    return common + `\n\nYou are the Lead Agent and dynamic conversation facilitator. After every specialist turn, you receive the updated transcript and must make exactly one decision:\n- If the objective is genuinely satisfied, complete it with a consolidated answer grounded in the specialists' conversation.\n- Otherwise, select the single most relevant specialist for the next incremental turn by explicit Agent ID. Choose by role and by what the conversation needs now, not by list order or a fixed rotation.\n- Tell the selected specialist what earlier contribution to build on, refine, verify, or challenge. Do not pre-plan later specialist turns because later decisions must use the new output.\n- You may select a specialist again when their expertise is still the best fit, but use another relevant voice when it would add useful challenge or refinement.\n- Keep statePatch as concise shared progress, decisions, or unresolved questions; do not copy the whole transcript.\n- For conversational objectives, request a direct contribution and do not ask specialists to create files. Request files or execution only when the objective explicitly requires artifacts.\n\nA minimum of ${minimumContributors} distinct specialist${minimumContributors === 1 ? "" : "s"} must contribute before completion${remainingRequiredContributors > 0 ? `; ${remainingRequiredContributors} more distinct contributor${remainingRequiredContributors === 1 ? " is" : "s are"} required` : ""}. ${stoppingInstruction}\n\nAuthorized specialist pool:\n${specialistCatalog}\n\nReply with JSON only, without markdown fences, using one of these shapes:\n{"message":"why this Agent is the best next contributor","statePatch":{"phase":"discussion","progress":"concise progress"},"decision":{"type":"delegate","agentId":"authorized specialist UUID","assignment":"one context-aware next contribution"}}\n{"message":"the objective is satisfied","statePatch":{"phase":"complete"},"decision":{"type":"complete","summary":"consolidated final answer and artifact locations when applicable"}}`;
   }
 
-  private delegationCount(database: Database, taskId: string): number {
-    return database.teamTaskEvents.filter(
-      (event) => event.taskId === taskId && event.type === "delegated",
+  private validateDelegation(task: TeamTask, agentId: string): void {
+    if (!task.specialistAgentIds.includes(agentId)) {
+      throw new Error("Lead selected an Agent outside the authorized specialist pool");
+    }
+  }
+
+  private contributedSpecialistIds(taskId: string): Set<string> {
+    return new Set(
+      this.store.snapshot().teamTaskEvents
+        .filter((event) =>
+          event.taskId === taskId &&
+          event.agentId &&
+          event.type === "specialist_result",
+        )
+        .map((event) => event.agentId!),
+    );
+  }
+
+  private specialistContributionCount(taskId: string): number {
+    return this.store.snapshot().teamTaskEvents.filter(
+      (event) => event.taskId === taskId && event.type === "specialist_result",
     ).length;
   }
 
-  private nextSpecialistId(database: Database, task: TeamTask): string {
-    const index = this.delegationCount(database, task.id) % task.specialistAgentIds.length;
-    const specialistId = task.specialistAgentIds[index];
-    if (!specialistId) throw new Error("Team Task has no specialist available for delegation");
-    return specialistId;
-  }
-
-  private allSpecialistsInvoked(task: TeamTask): boolean {
-    return this.delegationCount(this.store.snapshot(), task.id) >= task.specialistAgentIds.length;
+  private minimumCollaborationReached(task: TeamTask): boolean {
+    const contributed = this.contributedSpecialistIds(task.id);
+    return contributed.size >= Math.min(2, task.specialistAgentIds.length);
   }
 
   private parseLeadDecision(output: string): LeadDecision {
@@ -515,6 +589,8 @@ export class TeamTaskService {
       if (task.status !== "running") return;
       task.status = "paused";
       task.currentAgentId = null;
+      task.assignmentQueue = [];
+      task.activeTurnStartedAt = null;
       task.lastError = reason;
       task.updatedAt = now();
       this.releaseAgents(database, task);
@@ -529,6 +605,8 @@ export class TeamTaskService {
       task.status = "failed";
       task.currentAgentId = null;
       task.currentAssignment = null;
+      task.assignmentQueue = [];
+      task.activeTurnStartedAt = null;
       task.lastError = reason;
       task.completedAt = now();
       task.updatedAt = task.completedAt;

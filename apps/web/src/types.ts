@@ -53,6 +53,12 @@ export interface SystemInfo {
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type TeamTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
 
+export interface TeamAssignment {
+  id: string;
+  agentId: string;
+  assignment: string;
+}
+
 export interface TeamTask {
   id: string;
   objective: string;
@@ -62,6 +68,8 @@ export interface TeamTask {
   workspacePath: string;
   currentAgentId: string | null;
   currentAssignment: string | null;
+  assignmentQueue: TeamAssignment[];
+  activeTurnStartedAt: string | null;
   turnCount: number;
   maxTurns: number;
   sharedState: Record<string, JsonValue>;

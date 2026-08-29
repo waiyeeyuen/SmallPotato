@@ -21,6 +21,17 @@ describe("HTTP boundary", () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service, teamTasks);
     const invalid = await app.inject({ method: "POST", url: "/api/team-tasks", payload: { objective: "Ship", leadAgentId: "bad", specialistAgentIds: [] } });
     expect(invalid.statusCode).toBe(400);
+    const extraField = await app.inject({
+      method: "POST",
+      url: "/api/team-tasks",
+      payload: {
+        objective: "Ship a feature",
+        leadAgentId: "00000000-0000-4000-8000-000000000002",
+        specialistAgentIds: ["00000000-0000-4000-8000-000000000003"],
+        currentAgentId: "00000000-0000-4000-8000-000000000004",
+      },
+    });
+    expect(extraField.statusCode).toBe(400);
     const created = await app.inject({
       method: "POST",
       url: "/api/team-tasks",

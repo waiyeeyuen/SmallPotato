@@ -15,20 +15,20 @@ const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
-});
+}).strict();
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
   "At least one field is required",
 );
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
-});
+}).strict();
 const teamTaskIdParams = z.object({ id: z.string().uuid() });
 const createTeamTaskBody = z.object({
   objective: z.string().trim().min(1).max(20_000),
   leadAgentId: z.string().uuid(),
   specialistAgentIds: z.array(z.string().uuid()).min(1).max(20),
-});
+}).strict();
 
 export async function createApp(
   config: AppConfig,

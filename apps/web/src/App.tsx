@@ -310,6 +310,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">A</div>
@@ -330,17 +331,17 @@ export default function App() {
             setShowCreate(true);
           }}
         >
-          <span>＋</span> Create Agent
+          <span>＋</span> Create agent
         </button>
         <button
           className={"button team-nav-button " + (view === "team" ? "selected" : "")}
           onClick={() => setView("team")}
         >
-          <span>◇</span> Team Tasks
+          <span>◇</span> Team tasks
         </button>
 
         <div className="sidebar-label">
-          <span>Your Agents</span>
+          <span>Your agents</span>
           <span>{agents.length}</span>
         </div>
         <nav className="agent-list">
@@ -379,7 +380,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="main">
+      <main className="main" id="main-content">
         {!system?.arkConfigured || !system?.codexAvailable ? (
           <div className="config-banner">
             <span>!</span>

@@ -1,16 +1,17 @@
 # Volc Agent Launchpad
 
-A minimal Agent platform for three-day middleware hackathons. It provides Agent
-CRUD, a browser Playground, persistent workspaces, and Codex CLI backed by the
-Volcengine Ark Responses API.
+A working multi-Agent coordination platform for middleware hackathons. It provides
+Agent CRUD, a browser Playground, persistent workspaces, and a deterministic Team
+Task coordinator backed by Codex CLI and the Volcengine Ark Responses API.
 
 Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> This is a single-user hackathon application, not a multi-tenant production
+> service. It includes coordination audit events and disposable Runtime
+> containers, but it does not provide end-user identity or production hardening.
+> Do not use production data or credentials. See [SECURITY.md](SECURITY.md).
 
 ## Screenshots
 
@@ -26,7 +27,8 @@ Volcengine ECS.
 
 - React and TypeScript Web UI
 - Agent create, edit, start, stop, delete, and multi-turn chat
-- Team Tasks with a Lead Agent, specialist delegation, shared state, and a shared workspace
+- Team Tasks with transcript-aware dynamic specialist routing, shared versioned state, and a shared workspace
+- Live coordination progress, contextual handoffs, retry/failure evidence, stop/resume, and clean consecutive tasks
 - Fastify control plane with asynchronous Run state
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
@@ -69,10 +71,12 @@ Skip this step when already working from the repository root.
 ### 3. Start the POC
 
 ```bash
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
+cp .env.example .env
+# Fill ARK_API_KEY and ARK_MODEL in .env, then run:
 npm run poc
 ```
+
+Values passed directly in the command environment override `.env`.
 
 The first run installs Node.js dependencies and builds the Runtime image. The
 script automatically selects Docker, Colima, or Podman.
@@ -88,9 +92,9 @@ xdg-open http://localhost:3000   # Linux desktop
 
 In the Web UI:
 
-1. Select **Create Agent**.
+1. Select **Create agent**.
 2. Enter a name, description, and workspace instructions.
-3. Select **Create Agent** again.
+3. Select **Create agent** again.
 4. Enter a task in the Playground, for example:
 
    ```text
@@ -102,16 +106,22 @@ later messages.
 
 ### Team Tasks
 
-Create at least two Agents, then select **Team Tasks** in the sidebar. Choose one
-Lead, one or more specialists, and describe a shared objective. The Lead delegates
-sequential assignments, and the platform routes them through the selected specialists
-in their displayed round-robin order. Specialists work in one shared task workspace;
-their contributions appear in the group chat while technical events remain available
-in collapsed activity logs. Active tasks can be stopped; tasks paused by a restart or
-Lead failure can be resumed without losing the rotation position.
+Create at least two Agents, then select **Team tasks** in the sidebar. Choose one
+Lead, one or more specialists, and describe a shared objective. The selected specialists
+form an authorized pool rather than a fixed sequence. After each contribution, the Lead
+receives the updated actor-labelled transcript and dynamically selects the specialist
+best suited to build on, refine, verify, or challenge the conversation. Specialists also
+share one task workspace, with sequential turns so file writes remain deterministic.
+Contributions, handoffs, active assignment, elapsed time, retries, shared-state patches,
+and final Lead synthesis remain visible and persisted.
+Active tasks can be stopped. Tasks paused by a restart or Lead failure can be resumed,
+and a completed task can be followed immediately by a fresh task without a refresh.
 
 For a simple workplace demo, create Agents named Lead, Builder, and Reviewer, then
 ask them to plan, build, test, and review a small deliverable.
+
+See the [coordination architecture](docs/COORDINATION_ARCHITECTURE.md) and
+[judge demo runbook](docs/COORDINATION_DEMO.md) for the exact end-to-end flow.
 
 ### 5. Stop and resume
 
@@ -257,6 +267,8 @@ docker compose config
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Multi-Agent coordination architecture](docs/COORDINATION_ARCHITECTURE.md)
+- [Judge demo and test runbook](docs/COORDINATION_DEMO.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)

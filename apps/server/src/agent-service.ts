@@ -12,6 +12,11 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import {
+  issueAgentToken,
+  revokeAgentToken,
+} from "./agent-guard/agent-auth.js";
+import { ensureDefaultPolicies } from "./agent-guard/policy-store.js";
 
 const now = () => new Date().toISOString();
 
@@ -240,15 +245,24 @@ export class AgentService {
         storedRun.startedAt = now();
       }
     });
+    ensureDefaultPolicies(agentAtStart.id);
+    const agentGuardToken = issueAgentToken(
+      agentAtStart.id,
+      run.id,
+    );
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
       const result = await this.runner.run({
         agentId: agentAtStart.id,
+        runId: run.id,
+
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
+
+        agentGuardToken,
       });
       const completedAt = now();
       await this.store.mutate((database) => {
@@ -292,6 +306,8 @@ export class AgentService {
           agent.updatedAt = completedAt;
         }
       });
+    } finally{
+       revokeAgentToken(agentGuardToken);
     }
   }
 

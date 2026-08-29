@@ -12,8 +12,17 @@ import { HttpError } from "./errors.js";
 import { evaluatePolicy } from "./agent-guard/policy-engine.js";
 import { executeResourceAction } from "./agent-guard/resource-service.js";
 import { resolveAgentToken } from "./agent-guard/agent-auth.js";
-import type { AgentPolicy } from "./agent-guard/types.js";
-
+import { getPoliciesForAgent } from "./agent-guard/policy-store.js";
+import {
+  consumeApprovedRequest,
+  getOrCreatePendingApproval,
+  approveRequest,
+  listApprovals,
+} from "./agent-guard/approval-store.js";
+import {
+  listAuditEvents,
+  recordAuditEvent,
+} from "./agent-guard/audit-store.js";
 /**
  * Existing Launchpad schemas
  */
@@ -54,18 +63,7 @@ const guardActionBody = z.object({
  * Later we will replace these with policies attached
  * to real Agent IDs.
  */
-const demoPolicies: AgentPolicy[] = [
-  {
-    agentId: "agent-a",
-    resource: "project-alpha",
-    allowedActions: ["read", "write"],
-  },
-  {
-    agentId: "agent-a",
-    resource: "project-alpha-production",
-    allowedActions: ["deploy"],
-  },
-];
+
 
 export async function createApp(
   config: AppConfig,
@@ -76,6 +74,7 @@ export async function createApp(
       level: config.logLevel,
       redact: [
         "req.headers.authorization",
+        "req.headers.x-agent-token",
         "req.headers.cookie",
       ],
     },
@@ -171,55 +170,165 @@ export async function createApp(
       ? tokenHeader
       : undefined;
 
-  const agentId = resolveAgentToken(token);
+  const identity = resolveAgentToken(token);
 
-  /**
-   * No valid AgentGuard identity.
-   */
-  if (!agentId) {
-    return reply.code(401).send({
-      decision: "DENY",
-      reason: "Invalid or missing AgentGuard token",
-    });
-  }
+if (!identity) {
+  return reply.code(401).send({
+    decision: "DENY",
+    reason: "Invalid or missing AgentGuard token",
+  });
+}
 
   /**
    * Now authorization uses the identity
    * resolved by AgentGuard.
    */
-  const result = evaluatePolicy(
-    demoPolicies,
-    agentId,
+  const policies = getPoliciesForAgent(
+  identity.agentId,
+);
+
+const result = evaluatePolicy(
+  policies,
+  identity.agentId,
+  body.resource,
+  body.action,
+);
+
+  if (result.decision === "deny") {
+  recordAuditEvent({
+    actorType: "agent",
+    actorId: identity.agentId,
+    agentId: identity.agentId,
+    runId: identity.runId,
+    resource: body.resource,
+    action: body.action,
+    decision: "DENY",
+    reason: result.reason,
+  });
+
+  return reply.code(403).send({
+    decision: "DENY",
+    reason: result.reason,
+  });
+}
+
+  if (result.decision === "require_approval") {
+  const approved = consumeApprovedRequest(
+    identity.agentId,
     body.resource,
     body.action,
   );
-
-  if (result.decision === "deny") {
-    return reply.code(403).send({
-      decision: "DENY",
-      reason: result.reason,
-    });
-  }
-
-  if (result.decision === "require_approval") {
-    return reply.code(409).send({
-      decision: "REQUIRE_APPROVAL",
-      reason: result.reason,
-    });
-  }
-
+  if (approved) {
   const output = executeResourceAction(
     body.resource,
     body.action,
   );
 
+  recordAuditEvent({
+    actorType: "agent",
+    actorId: identity.agentId,
+    agentId: identity.agentId,
+    runId: identity.runId,
+    resource: body.resource,
+    action: body.action,
+    decision: "ALLOW",
+    reason: "Human approval granted and consumed",
+    approvalId: approved.id,
+  });
+
   return reply.code(200).send({
     decision: "ALLOW",
-    agentId,
-    reason: result.reason,
+    reason: "Human approval granted and consumed",
+    approvalId: approved.id,
     output,
   });
+
+  
+  }
+
+  const approval = getOrCreatePendingApproval(
+  identity.agentId,
+  identity.runId,
+  body.resource,
+  body.action,
+);
+
+recordAuditEvent({
+  actorType: "agent",
+  actorId: identity.agentId,
+  agentId: identity.agentId,
+  runId: identity.runId,
+  resource: body.resource,
+  action: body.action,
+  decision: "REQUIRE_APPROVAL",
+  reason: result.reason,
+  approvalId: approval.id,
 });
+
+return reply.code(409).send({
+  decision: "REQUIRE_APPROVAL",
+  reason: result.reason,
+  approvalId: approval.id,
+});
+}
+
+  const output = executeResourceAction(
+    body.resource,
+    body.action,
+  );
+  recordAuditEvent({
+  actorType: "agent",
+  actorId: identity.agentId,
+  agentId: identity.agentId,
+  runId: identity.runId,
+  resource: body.resource,
+  action: body.action,
+  decision: "ALLOW",
+  reason: result.reason,
+});
+  return reply.code(200).send({
+  decision: "ALLOW",
+  agentId: identity.agentId,
+  runId: identity.runId,
+  reason: result.reason,
+  output,
+});
+});
+app.get("/api/guard/approvals", async () => {
+  return {
+    approvals: listApprovals(),
+  };
+});
+app.post(
+  "/api/guard/approvals/:id/approve",
+  async (request, reply) => {
+    const params = z.object({
+      id: z.string().uuid(),
+    }).parse(request.params);
+
+    const approval = approveRequest(params.id);
+    
+    if (!approval) {
+      return reply.code(404).send({
+        error: "Pending approval not found",
+      });
+    }
+    recordAuditEvent({
+  actorType: "human",
+  actorId: "demo-human",
+  agentId: approval.agentId,
+  resource: approval.resource,
+  action: "approve",
+  decision: "APPROVED",
+  reason: "Human approved sensitive action",
+  approvalId: approval.id,
+});
+
+    return {
+      approval,
+    };
+  },
+);
 
   /**
    * ==========================================
@@ -344,6 +453,11 @@ export async function createApp(
       run: service.getRun(id),
     };
   });
+  app.get("/api/guard/audit", async () => {
+  return {
+    events: listAuditEvents(),
+  };
+});
 
   /**
    * Production frontend

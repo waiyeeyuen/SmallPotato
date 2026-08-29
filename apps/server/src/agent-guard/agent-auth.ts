@@ -1,13 +1,38 @@
-const agentTokens = new Map<string, string>([
-  ["demo-token-agent-a", "agent-a"],
-]);
+import { randomUUID } from "node:crypto";
+
+export interface AgentIdentity {
+  agentId: string;
+  runId: string;
+}
+
+const activeTokens = new Map<string, AgentIdentity>();
+
+export function issueAgentToken(
+  agentId: string,
+  runId: string,
+): string {
+  const token = randomUUID();
+
+  activeTokens.set(token, {
+    agentId,
+    runId,
+  });
+
+  return token;
+}
 
 export function resolveAgentToken(
   token: string | undefined,
-): string | null {
+): AgentIdentity | null {
   if (!token) {
     return null;
   }
 
-  return agentTokens.get(token) ?? null;
+  return activeTokens.get(token) ?? null;
+}
+
+export function revokeAgentToken(
+  token: string,
+): void {
+  activeTokens.delete(token);
 }

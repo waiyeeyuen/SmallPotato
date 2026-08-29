@@ -70,9 +70,13 @@ export interface RunnerResult {
 
 export interface RunnerRequest {
   agentId: string;
+  runId: string;
+
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+
+  agentGuardToken: string;
 }
 
 export interface AgentRunner {

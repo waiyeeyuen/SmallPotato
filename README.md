@@ -1,19 +1,17 @@
-# PotatoGuard
+# Volc Agent Launchpad
 
-**Just-in-time capability leases for autonomous Agents.** PotatoGuard is a
-submission-ready Track 1 extension of the Volc Agent Launchpad. It combines
-password authentication, separate human and Agent identities, a protected
-resource vault, deny-by-default permissions, Runtime-level read-only mounts,
-revocation, and tamper-evident access receipts.
+A working multi-Agent coordination platform for middleware hackathons. It provides
+Agent CRUD, a browser Playground, persistent workspaces, and a deterministic Team
+Task coordinator backed by Codex CLI and the Volcengine Ark Responses API.
 
 Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a complete hackathon reference implementation with real backend
-> authorization. It is not a hardened multi-tenant security product. Use only
-> fictional resources and development credentials. See
-> [SECURITY.md](SECURITY.md).
+> This is a single-user hackathon application, not a multi-tenant production
+> service. It includes coordination audit events and disposable Runtime
+> containers, but it does not provide end-user identity or production hardening.
+> Do not use production data or credentials. See [SECURITY.md](SECURITY.md).
 
 ## Track 1 submission: Bouncer
 
@@ -43,6 +41,8 @@ The submission includes:
 - Browser-supplied human/owner IDs rejected at the HTTP boundary
 - React and TypeScript Web UI
 - Agent create, edit, start, stop, delete, and multi-turn chat
+- Team Tasks with transcript-aware dynamic specialist routing, shared versioned state, and a shared workspace
+- Live coordination progress, contextual handoffs, retry/failure evidence, stop/resume, and clean consecutive tasks
 - Fastify control plane with asynchronous Run state
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
@@ -95,10 +95,12 @@ The startup script reads only those three Ark settings from `.env`; it ignores
 Docker-only paths and other shell settings. You can also supply them explicitly:
 
 ```bash
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
+cp .env.example .env
+# Fill ARK_API_KEY and ARK_MODEL in .env, then run:
 npm run poc
 ```
+
+Values passed directly in the command environment override `.env`.
 
 The first run installs Node.js dependencies and builds the Runtime image. The
 script automatically selects Docker, Colima, or Podman.
@@ -123,13 +125,10 @@ These published credentials are controlled fixtures, not production accounts.
 
 In the Web UI:
 
-1. Sign in as Alice and select **Create Agent**.
-2. Open **Access leases** and issue a short-lived read capability for Alice's
-   Launch Plan.
-3. Return to the Playground, select the Launch Plan, and ask the Agent to
-   summarize it.
-4. Open **Audit receipts** to inspect the allowed decision.
-5. Select Bob's Finance Report and repeat the task to demonstrate backend denial.
+1. Select **Create agent**.
+2. Enter a name, description, and workspace instructions.
+3. Select **Create agent** again.
+4. Enter a task in the Playground, for example:
 
    ```text
    Create a TypeScript hello-world CLI, add a test, and run it.
@@ -138,9 +137,24 @@ In the Web UI:
 The Agent can write files, run commands, and continue the same Codex session in
 later messages.
 
-Protected-resource tasks require the `npm run poc` container profile. This is
-intentional: the read-only bind mount is the enforcement boundary. Ordinary
-unprotected tasks remain available in the local development profile.
+### Team Tasks
+
+Create at least two Agents, then select **Team tasks** in the sidebar. Choose one
+Lead, one or more specialists, and describe a shared objective. The selected specialists
+form an authorized pool rather than a fixed sequence. After each contribution, the Lead
+receives the updated actor-labelled transcript and dynamically selects the specialist
+best suited to build on, refine, verify, or challenge the conversation. Specialists also
+share one task workspace, with sequential turns so file writes remain deterministic.
+Contributions, handoffs, active assignment, elapsed time, retries, shared-state patches,
+and final Lead synthesis remain visible and persisted.
+Active tasks can be stopped. Tasks paused by a restart or Lead failure can be resumed,
+and a completed task can be followed immediately by a fresh task without a refresh.
+
+For a simple workplace demo, create Agents named Lead, Builder, and Reviewer, then
+ask them to plan, build, test, and review a small deliverable.
+
+See the [coordination architecture](docs/COORDINATION_ARCHITECTURE.md) and
+[judge demo runbook](docs/COORDINATION_DEMO.md) for the exact end-to-end flow.
 
 ### 5. Stop and resume
 
@@ -258,10 +272,11 @@ See [.env.example](.env.example) for all Runtime and resource-limit options.
 ```mermaid
 flowchart LR
     UI["React Web UI"] --> API["Fastify control plane"]
-    API --> Policy["Ownership and capability policy"]
-    Policy --> Vault["Server-side protected resource vault"]
-    Policy --> Audit["Hash-chained access receipts"]
-    Policy --> Runtime{"Runtime provider"}
+    API --> Store["JSON metadata and Agent workspaces"]
+    API --> Team["Team Task coordinator"]
+    Team --> Store
+    Team --> Runtime
+    API --> Runtime{"Runtime provider"}
     Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
     Runtime -->|ECS profile| Codex["Codex CLI in application container"]
     Container --> Ark["Volcengine Ark Responses API"]
@@ -285,6 +300,8 @@ docker compose config
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Multi-Agent coordination architecture](docs/COORDINATION_ARCHITECTURE.md)
+- [Judge demo and test runbook](docs/COORDINATION_DEMO.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)

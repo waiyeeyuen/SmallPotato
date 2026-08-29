@@ -1,6 +1,28 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
+export type TeamTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
+export type TeamTaskEventType =
+  | "task_started"
+  | "turn_started"
+  | "lead_decision"
+  | "delegated"
+  | "specialist_result"
+  | "turn_retry"
+  | "turn_failed"
+  | "task_paused"
+  | "task_resumed"
+  | "task_completed"
+  | "task_stopped"
+  | "system";
+
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export interface Agent {
   id: string;
@@ -12,6 +34,7 @@ export interface Agent {
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
+  activeTeamTaskId: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -44,6 +67,49 @@ export interface AgentRun {
   policyDecisionId: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  createdAt: string;
+}
+
+export interface TeamTask {
+  id: string;
+  objective: string;
+  leadAgentId: string;
+  specialistAgentIds: string[];
+  status: TeamTaskStatus;
+  workspacePath: string;
+  currentAgentId: string | null;
+  currentAssignment: string | null;
+  assignmentQueue: TeamAssignment[];
+  activeTurnStartedAt: string | null;
+  turnCount: number;
+  maxTurns: number;
+  sharedState: Record<string, JsonValue>;
+  stateVersion: number;
+  threadIds: Record<string, string | null>;
+  completionSummary: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface TeamAssignment {
+  id: string;
+  agentId: string;
+  assignment: string;
+}
+
+export interface TeamTaskEvent {
+  id: string;
+  taskId: string;
+  sequence: number;
+  type: TeamTaskEventType;
+  agentId: string | null;
+  content: string;
+  chatContent: string | null;
+  assignment: string | null;
+  attempt: number | null;
+  statePatch: Record<string, JsonValue> | null;
   createdAt: string;
 }
 
@@ -125,7 +191,7 @@ export interface RequestActor {
 }
 
 export interface Database {
-  version: 3;
+  version: 5;
   users: User[];
   sessions: Session[];
   agents: Agent[];
@@ -134,6 +200,8 @@ export interface Database {
   resources: ProtectedResource[];
   grants: PermissionGrant[];
   decisions: PolicyDecision[];
+  teamTasks: TeamTask[];
+  teamTaskEvents: TeamTaskEvent[];
 }
 
 export interface CreateAgentInput {
@@ -146,6 +214,12 @@ export interface UpdateAgentInput {
   name?: string | undefined;
   description?: string | undefined;
   instructions?: string | undefined;
+}
+
+export interface CreateTeamTaskInput {
+  objective: string;
+  leadAgentId: string;
+  specialistAgentIds: string[];
 }
 
 export interface RunnerResult {

@@ -42,7 +42,7 @@ export class AgentService {
         }
       }
       for (const agent of database.agents) {
-        if (agent.status === "busy") {
+        if (agent.status === "busy" && !agent.activeTeamTaskId) {
           agent.status = "ready";
           agent.updatedAt = now();
         }
@@ -84,6 +84,7 @@ export class AgentService {
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
+      activeTeamTaskId: null,
       lastError: null,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -99,6 +100,9 @@ export class AgentService {
     input: UpdateAgentInput,
   ): Promise<Agent> {
     const current = this.getAgent(actor, id);
+    if (current.activeTeamTaskId) {
+      throw new HttpError(409, "This Agent is reserved by an active Team Task");
+    }
     if (current.status === "busy") {
       throw new HttpError(409, "Stop the active run before editing this Agent");
     }
@@ -123,6 +127,9 @@ export class AgentService {
 
   async deleteAgent(actor: RequestActor, id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(actor, id);
+    if (agent.activeTeamTaskId) {
+      throw new HttpError(409, "Stop the active Team Task before deleting this Agent");
+    }
     await this.cancelExecution(id);
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
@@ -137,12 +144,18 @@ export class AgentService {
   }
 
   async startAgent(actor: RequestActor, id: string): Promise<Agent> {
+    if (this.getAgent(actor, id).activeTeamTaskId) {
+      throw new HttpError(409, "This Agent is reserved by an active Team Task");
+    }
     this.getAgent(actor, id);
     return this.setStatus(id, "ready");
   }
 
   async stopAgent(actor: RequestActor, id: string): Promise<Agent> {
-    this.getAgent(actor, id);
+    const agent = this.getAgent(actor, id);
+    if (agent.activeTeamTaskId) {
+      throw new HttpError(409, "Stop the active Team Task instead");
+    }
     await this.cancelExecution(id);
     return this.setStatus(id, "stopped");
   }
@@ -247,6 +260,9 @@ export class AgentService {
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
+      }
+      if (storedAgent.activeTeamTaskId) {
+        throw new HttpError(409, "This Agent is reserved by an active Team Task");
       }
       if (storedAgent.status === "stopped") {
         throw new HttpError(409, "Start the Agent before sending a message");
@@ -368,6 +384,9 @@ export class AgentService {
       const agent = database.agents.find((item) => item.id === id);
       if (!agent) {
         throw new HttpError(404, "Agent not found");
+      }
+      if (agent.activeTeamTaskId) {
+        throw new HttpError(409, "This Agent is reserved by an active Team Task");
       }
       if (status === "ready" && agent.status === "busy") {
         throw new HttpError(409, "Stop the active run before starting this Agent");

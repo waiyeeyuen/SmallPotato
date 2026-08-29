@@ -6,6 +6,8 @@ import type {
   PolicyDecision,
   ResourceSummary,
   SystemInfo,
+  TeamTask,
+  TeamTaskEvent,
   User,
 } from "./types";
 
@@ -79,6 +81,18 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  listTeamTasks: () => request<{ tasks: TeamTask[] }>("/api/team-tasks"),
+  createTeamTask: (body: { objective: string; leadAgentId: string; specialistAgentIds: string[] }) =>
+    request<{ task: TeamTask }>("/api/team-tasks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  teamTask: (id: string) =>
+    request<{ task: TeamTask; events: TeamTaskEvent[] }>("/api/team-tasks/" + id),
+  stopTeamTask: (id: string) =>
+    request<{ task: TeamTask }>("/api/team-tasks/" + id + "/stop", { method: "POST" }),
+  resumeTeamTask: (id: string) =>
+    request<{ task: TeamTask }>("/api/team-tasks/" + id + "/resume", { method: "POST" }),
   resources: () => request<{ resources: ResourceSummary[] }>("/api/resources"),
   createResource: (body: { name: string; description: string; content: string }) =>
     request<{ resource: ResourceSummary }>("/api/resources", {

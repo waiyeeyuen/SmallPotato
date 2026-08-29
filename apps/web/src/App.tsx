@@ -10,8 +10,9 @@ import type {
   SystemInfo,
   User,
 } from "./types";
+import { TeamTaskView } from "./TeamTaskView";
 
-type View = "playground" | "resources" | "access" | "audit";
+type View = "playground" | "team" | "resources" | "access" | "audit";
 
 const emptyAgent = {
   name: "",
@@ -527,13 +528,23 @@ export default function App() {
           setForm(emptyAgent);
           setShowCreate(true);
         }}>＋ Create agent</button>
+
+        <button
+          className={"button team-nav-button " + (view === "team" ? "selected" : "")}
+          onClick={() => setView("team")}
+        >
+          <span>◇</span> Team tasks
+        </button>
         <div className="sidebar-label"><span>Your agents</span><span>{agents.length}</span></div>
         <nav className="agent-list" aria-label="Agents">
           {agents.map((agent) => (
             <button
               className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
               key={agent.id}
-              onClick={() => setSelectedId(agent.id)}
+              onClick={() => {
+                setSelectedId(agent.id);
+                setView("playground");
+              }}
             >
               <span className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</span>
               <span className="agent-card-copy"><strong>{agent.name}</strong><span>{agent.description || "Coding agent"}</span></span>
@@ -562,7 +573,17 @@ export default function App() {
           </span></div>
         ) : null}
 
-        {selected ? (
+        {view === "team" ? (
+          <TeamTaskView
+            agents={agents}
+            onAgentsChanged={refreshAgents}
+            onCreateAgent={() => {
+              setForm(emptyAgent);
+              setShowCreate(true);
+            }}
+            onError={setError}
+          />
+        ) : selected ? (
           <>
             <header className="agent-header">
               <div>

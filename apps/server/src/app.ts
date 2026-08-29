@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import type { TeamTaskService } from "./team-task-service.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -22,10 +23,17 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const teamTaskIdParams = z.object({ id: z.string().uuid() });
+const createTeamTaskBody = z.object({
+  objective: z.string().trim().min(1).max(20_000),
+  leadAgentId: z.string().uuid(),
+  specialistAgentIds: z.array(z.string().uuid()).min(1).max(20),
+});
 
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  teamTasks?: TeamTaskService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -127,6 +135,30 @@ export async function createApp(
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
   });
+
+  if (teamTasks) {
+    app.get("/api/team-tasks", async () => ({ tasks: teamTasks.listTasks() }));
+
+    app.post("/api/team-tasks", async (request, reply) => {
+      const body = createTeamTaskBody.parse(request.body);
+      return reply.code(202).send({ task: await teamTasks.createTask(body) });
+    });
+
+    app.get("/api/team-tasks/:id", async (request) => {
+      const { id } = teamTaskIdParams.parse(request.params);
+      return { task: teamTasks.getTask(id), events: teamTasks.getEvents(id) };
+    });
+
+    app.post("/api/team-tasks/:id/stop", async (request) => {
+      const { id } = teamTaskIdParams.parse(request.params);
+      return { task: await teamTasks.stopTask(id) };
+    });
+
+    app.post("/api/team-tasks/:id/resume", async (request) => {
+      const { id } = teamTaskIdParams.parse(request.params);
+      return { task: await teamTasks.resumeTask(id) };
+    });
+  }
 
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));

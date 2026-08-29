@@ -6,9 +6,13 @@ Volc Agent Launchpad is a single-node control plane for hackathon use.
 flowchart LR
     UI["React Web UI"] --> API["Fastify API"]
     API --> Service["AgentService"]
+    API --> Team["TeamTaskService"]
     Service --> Store["JSON store"]
+    Team --> Store
     Service --> Workspace["Agent workspace"]
+    Team --> SharedWorkspace["Shared Team Task workspace"]
     Service --> Runner{"AgentRunner"}
+    Team --> Runner
     Runner -->|Local POC| Container["Disposable Runtime container"]
     Runner -->|ECS| Process["Codex child process"]
     Container --> Ark["Volcengine Ark"]
@@ -41,11 +45,27 @@ stopped  error
 
 Interrupted Runs become `cancelled` after a restart.
 
+### TeamTaskService
+
+Coordinates one shared objective at a time using existing Agents. A selected Lead
+delegates assignments through a validated JSON decision. The service routes those
+assignments through the selected specialist IDs in strict round-robin order;
+specialists work sequentially in one shared task workspace, and control returns to
+the Lead after each result. The service owns Agent reservations, ordered events,
+shared state, retry handling, participation enforcement, and the 30-turn safety
+limit. Direct conversational assignments return literal results, while workspace
+artifacts and execution are reserved for objectives that explicitly request them.
+
+An Agent's Team Task threads and workspace are separate from its personal
+Playground thread and workspace. Active tasks pause after a server restart and can
+be resumed explicitly through the Lead.
+
 ### Storage
 
 ```text
 data/launchpad.json       Agent, message, and Run metadata
 workspaces/AgentID/       Agent-created files
+workspaces/.team-tasks/   Shared Team Task files
 workspaces/.deleted/      Archived deleted workspaces
 codex-home/               Codex configuration and sessions
 ```

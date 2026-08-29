@@ -26,6 +26,7 @@ Volcengine ECS.
 
 - React and TypeScript Web UI
 - Agent create, edit, start, stop, delete, and multi-turn chat
+- Team Tasks with a Lead Agent, specialist delegation, shared state, and a shared workspace
 - Fastify control plane with asynchronous Run state
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
@@ -98,6 +99,19 @@ In the Web UI:
 
 The Agent can write files, run commands, and continue the same Codex session in
 later messages.
+
+### Team Tasks
+
+Create at least two Agents, then select **Team Tasks** in the sidebar. Choose one
+Lead, one or more specialists, and describe a shared objective. The Lead delegates
+sequential assignments, and the platform routes them through the selected specialists
+in their displayed round-robin order. Specialists work in one shared task workspace;
+their contributions appear in the group chat while technical events remain available
+in collapsed activity logs. Active tasks can be stopped; tasks paused by a restart or
+Lead failure can be resumed without losing the rotation position.
+
+For a simple workplace demo, create Agents named Lead, Builder, and Reviewer, then
+ask them to plan, build, test, and review a small deliverable.
 
 ### 5. Stop and resume
 
@@ -216,6 +230,9 @@ See [.env.example](.env.example) for all Runtime and resource-limit options.
 flowchart LR
     UI["React Web UI"] --> API["Fastify control plane"]
     API --> Store["JSON metadata and Agent workspaces"]
+    API --> Team["Team Task coordinator"]
+    Team --> Store
+    Team --> Runtime
     API --> Runtime{"Runtime provider"}
     Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
     Runtime -->|ECS profile| Codex["Codex CLI in application container"]

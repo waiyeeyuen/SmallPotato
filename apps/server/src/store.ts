@@ -1,13 +1,26 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Database } from "./types.js";
+import type { Agent, AgentRun, Database, Message } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 1,
+  version: 2,
   agents: [],
   messages: [],
   runs: [],
+  teamTasks: [],
+  teamTaskEvents: [],
 });
+
+interface LegacyDatabase {
+  version: 1;
+  agents: Array<Omit<Agent, "activeTeamTaskId">>;
+  messages: Message[];
+  runs: AgentRun[];
+}
+
+interface NewerDatabase extends Omit<Database, "version"> {
+  version: 3 | 4;
+}
 
 export class JsonStore {
   private data: Database = emptyDatabase();
@@ -19,11 +32,40 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database;
-      if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
+      const parsed = JSON.parse(raw) as Database | LegacyDatabase | NewerDatabase;
+      if (!Array.isArray(parsed.agents)) {
         throw new Error("Unsupported database format");
       }
-      this.data = parsed;
+      if (parsed.version === 1) {
+        this.data = {
+          version: 2,
+          agents: parsed.agents.map((agent) => ({
+            ...agent,
+            activeTeamTaskId: null,
+          })),
+          messages: parsed.messages,
+          runs: parsed.runs,
+          teamTasks: [],
+          teamTaskEvents: [],
+        };
+        await this.persist(this.data);
+      } else if (
+        (parsed.version === 2 || parsed.version === 3 || parsed.version === 4) &&
+        Array.isArray(parsed.messages) &&
+        Array.isArray(parsed.runs) &&
+        Array.isArray(parsed.teamTasks) &&
+        Array.isArray(parsed.teamTaskEvents)
+      ) {
+        if (parsed.version === 2) {
+          this.data = parsed;
+        } else {
+          await copyFile(this.filePath, this.filePath + ".v" + parsed.version + ".backup");
+          this.data = { ...parsed, version: 2 };
+          await this.persist(this.data);
+        }
+      } else {
+        throw new Error("Unsupported database format");
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

@@ -1,6 +1,6 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Agent } from "./types.js";
+import type { Agent, TeamTask } from "./types.js";
 
 export class WorkspaceManager {
   constructor(private readonly root: string) {}
@@ -12,6 +12,38 @@ export class WorkspaceManager {
   async initialize(): Promise<void> {
     await mkdir(this.root, { recursive: true });
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
+    await mkdir(path.join(this.root, ".team-tasks"), { recursive: true });
+  }
+
+  teamTaskWorkspacePath(taskId: string): string {
+    return path.join(this.root, ".team-tasks", taskId);
+  }
+
+  async createTeamTaskWorkspace(task: TeamTask): Promise<void> {
+    await mkdir(task.workspacePath, { recursive: false });
+    await writeFile(
+      path.join(task.workspacePath, "AGENTS.md"),
+      [
+        "# Platform-managed Team Task instructions",
+        "",
+        "This workspace is shared by multiple Agents taking sequential turns.",
+        "Only work on the shared objective supplied in the current prompt.",
+        "Inspect existing work before editing and preserve useful contributions.",
+        "Never print environment variables or credentials.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(task.workspacePath, ".gitignore"),
+      [".codex/", "node_modules/", "dist/", ".env", "*.log", ""].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(task.workspacePath, "README.md"),
+      ["# Shared Team Task", "", "## Objective", "", task.objective, ""].join("\n"),
+      "utf8",
+    );
   }
 
   async create(agent: Agent): Promise<void> {

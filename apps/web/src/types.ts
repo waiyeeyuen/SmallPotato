@@ -9,6 +9,7 @@ export interface Agent {
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
+  activeTeamTaskId: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -47,4 +48,41 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+}
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+export type TeamTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
+
+export interface TeamTask {
+  id: string;
+  objective: string;
+  leadAgentId: string;
+  specialistAgentIds: string[];
+  status: TeamTaskStatus;
+  workspacePath: string;
+  currentAgentId: string | null;
+  currentAssignment: string | null;
+  turnCount: number;
+  maxTurns: number;
+  sharedState: Record<string, JsonValue>;
+  stateVersion: number;
+  threadIds: Record<string, string | null>;
+  completionSummary: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface TeamTaskEvent {
+  id: string;
+  taskId: string;
+  sequence: number;
+  type: string;
+  agentId: string | null;
+  content: string;
+  assignment: string | null;
+  attempt: number | null;
+  statePatch: Record<string, JsonValue> | null;
+  createdAt: string;
 }

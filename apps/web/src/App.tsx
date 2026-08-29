@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import { TeamTaskView } from "./TeamTaskView";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -37,6 +38,7 @@ function Spinner() {
 
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [view, setView] = useState<"playground" | "team">("playground");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
@@ -330,6 +332,12 @@ export default function App() {
         >
           <span>＋</span> Create Agent
         </button>
+        <button
+          className={"button team-nav-button " + (view === "team" ? "selected" : "")}
+          onClick={() => setView("team")}
+        >
+          <span>◇</span> Team Tasks
+        </button>
 
         <div className="sidebar-label">
           <span>Your Agents</span>
@@ -340,7 +348,10 @@ export default function App() {
             <button
               className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
               key={agent.id}
-              onClick={() => setSelectedId(agent.id)}
+              onClick={() => {
+                setSelectedId(agent.id);
+                setView("playground");
+              }}
             >
               <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
               <div className="agent-card-copy">
@@ -392,7 +403,17 @@ export default function App() {
           </div>
         )}
 
-        {selected ? (
+        {view === "team" ? (
+          <TeamTaskView
+            agents={agents}
+            onAgentsChanged={refreshAgents}
+            onCreateAgent={() => {
+              setForm(emptyForm);
+              setShowCreate(true);
+            }}
+            onError={setError}
+          />
+        ) : selected ? (
           <>
             <header className="agent-header">
               <div>

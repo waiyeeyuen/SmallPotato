@@ -401,7 +401,7 @@ export class TeamTaskService {
       if (Object.keys(response.statePatch).length > 0) task.stateVersion += 1;
       if (task.turnPolicy === null && response.plan) {
         const roster = task.agentSelection === "lead" && response.plan.rosterAgentIds
-          ? this.resolveRefs(task.specialistAgentIds, response.plan.rosterAgentIds)
+          ? this.resolveRosterRefs(task, response.plan.rosterAgentIds).roster
           : null;
         task.turnPolicy = response.plan.turnPolicy;
         if (roster) {
@@ -468,7 +468,10 @@ export class TeamTaskService {
       const assignment = task.currentAssignment;
       task.activeTurnStartedAt = null;
       task.threadIds[agentId] = result.threadId;
-      this.addEvent(database, task, "specialist_result", agentId, response.activity, assignment, null, null, response.message);
+      const chatMessage = task.turnPolicy === "sequential"
+        ? this.tightenSequentialMessage(assignment, response.message)
+        : response.message;
+      this.addEvent(database, task, "specialist_result", agentId, response.activity, assignment, null, null, chatMessage);
       task.currentAgentId = task.leadAgentId;
       task.currentAssignment = "Review the latest contribution in the shared conversation and dynamically choose the next specialist or complete.";
       task.assignmentQueue = [];
@@ -521,10 +524,10 @@ export class TeamTaskService {
       "Shared conversation transcript, oldest to newest:\n" + (history || "No earlier turns"),
     ].join("\n\n");
     if (!isLead) {
-      const sequentialNote = task.turnPolicy === "sequential"
-        ? `\n- This is a turn-by-turn sequential task: contribute exactly the value named in the current assignment and stop. Do not advance the sequence yourself, produce more than one step, or finish the whole sequence.`
-        : "";
-      return common + `\n\nAct as one turn in a continuing multi-Agent conversation, not as an isolated solver. Complete exactly the current assignment and use the transcript above as authoritative context:\n- Explicitly build on, refine, test, or challenge the latest relevant contribution instead of repeating it.\n- Advance only the next useful step. Do not restart the objective from scratch or produce a premature final synthesis unless the assignment asks for one.${sequentialNote}\n- For a direct conversational action, return the requested result directly. Do not create, edit, or persist a file or script merely to produce that result.\n- Create code or another workspace artifact only when the objective or assignment explicitly requests a file, implementation, or persisted deliverable.\n- When execution is explicitly requested, inspect the existing shared workspace, run the artifact, verify it, and record the actual output in activity.\n- Put only the concise contribution that belongs in the shared conversation in message. Put file operations, commands, verification, and other process detail in activity.\nDo not choose the next Agent. Reply with JSON only, without markdown fences, using this shape:\n{"message":"concise contribution that responds to the shared conversation","activity":"operational result for the Lead and Activity logs"}`;
+      if (task.turnPolicy === "sequential") {
+        return common + `\n\nThis is a turn-by-turn sequential task with a STRICT output format.\n- Your "message" must be ONLY the exact value the current assignment asks for — for example: 10. No sentence, no explanation, no restatement of the task, no label, no quotes, no trailing punctuation.\n- Ignore your usual role, tone, and writing style for this turn. Do not add "Research confirms", "The next number is", or any framing. Just the value.\n- Read the transcript to see the previous value, produce exactly the one value the assignment names, and stop. Do not advance the sequence yourself or finish it.\n- Put any reasoning, checks, or working in "activity". Never in "message".\n- Do not create or run files.\nReply with JSON only, without markdown fences, using this shape:\n{"message":"10","activity":"your reasoning and any checks"}`;
+      }
+      return common + `\n\nAct as one turn in a continuing multi-Agent conversation, not as an isolated solver. Complete exactly the current assignment and use the transcript above as authoritative context:\n- Explicitly build on, refine, test, or challenge the latest relevant contribution instead of repeating it.\n- Advance only the next useful step. Do not restart the objective from scratch or produce a premature final synthesis unless the assignment asks for one.\n- For a direct conversational action, return the requested result directly. Do not create, edit, or persist a file or script merely to produce that result.\n- Create code or another workspace artifact only when the objective or assignment explicitly requests a file, implementation, or persisted deliverable.\n- When execution is explicitly requested, inspect the existing shared workspace, run the artifact, verify it, and record the actual output in activity.\n- Put only the concise contribution that belongs in the shared conversation in message. Put file operations, commands, verification, and other process detail in activity.\nDo not choose the next Agent. Reply with JSON only, without markdown fences, using this shape:\n{"message":"concise contribution that responds to the shared conversation","activity":"operational result for the Lead and Activity logs"}`;
     }
     if (task.turnPolicy === null) {
       const minimum = Math.min(2, task.specialistAgentIds.length);
@@ -535,9 +538,9 @@ export class TeamTaskService {
         .join("\n");
       const rosterField = task.agentSelection === "lead" ? `,"rosterAgentIds":["Agent name or id","..."]` : "";
       const rosterInstruction = task.agentSelection === "lead"
-        ? `\n\nYou choose the roster. Include ONLY the Agents whose described role directly serves this objective — most objectives need 2 to 4. Do not include an Agent just because it is available: if its description has little to do with the objective, leave it out. In plan.rosterAgentIds list the chosen Agents by name or id (at least ${minimum}), and in your message name each one with a one-line reason it is needed. Every Agent you leave out is released for other work and cannot be added back later.`
+        ? `\n\nYou choose the roster from the Agents listed above ONLY. Copy their names exactly as written. Do NOT include yourself (you are the Lead, not a roster member) and do NOT invent an Agent that is not on the list. Include only the Agents whose described role directly serves this objective — most objectives need 2 to 4; leave out the rest. In plan.rosterAgentIds list at least ${minimum} of those exact names, and in your message give a one-line reason per pick. Agents you leave out are released and cannot be added back.`
         : `\n\nThe roster is fixed to the Agents above; you do not choose it, so omit plan.rosterAgentIds.`;
-      return common + `\n\nThis is your first turn as Lead. Decide how the team will coordinate, then make the first hand-off. This choice is locked for the rest of the task.\n\nCoordination modes:\n- "sequential": the platform rotates through the roster in a fixed order, one turn each. Choose this when the objective is an ordered, turn-by-turn process such as a countdown, a relay, or numbered steps. You write each step's assignment; the platform picks who acts.\n- "facilitated": you pick the single most relevant Agent every turn. Choose this for open-ended work such as planning, research, debate, or design, where who should act next depends on the discussion.${rosterInstruction}\n\nIf you choose "sequential", your first delegation must ask for the sequence's first value exactly as written in the objective — for "count down from 10 to 1" the first value is 10, not 9 — and record it in statePatch (for example {"currentNumber":10}). Every later delegation asks for the one next value after the last one in the transcript.\n\nA minimum of ${minimum} distinct specialist${minimum === 1 ? "" : "s"} must contribute before you may complete, so your first turn must delegate, not complete.\n\nReply with JSON only, without markdown fences. If you chose "sequential":\n{"message":"why sequential fits this objective","plan":{"turnPolicy":"sequential"${rosterField}},"statePatch":{"phase":"starting","progress":"concise progress"},"decision":{"type":"delegate","assignment":"the first step of the sequence"}}\nIf you chose "facilitated":\n{"message":"why facilitated fits, and one reason per chosen Agent","plan":{"turnPolicy":"facilitated"${rosterField}},"statePatch":{"phase":"starting","progress":"concise progress"},"decision":{"type":"delegate","agentId":"the name or id of the first Agent to act","assignment":"the first assignment for that Agent"}}`;
+      return common + `\n\nThis is your first turn as Lead. Decide how the team will coordinate, then make the first hand-off. This choice is locked for the rest of the task.\n\nCoordination modes:\n- "sequential": the platform rotates through the roster in a fixed order, one turn each. Choose this when the objective is an ordered, turn-by-turn process such as a countdown, a relay, or numbered steps. You write each step's assignment; the platform picks who acts.\n- "facilitated": you pick the single most relevant Agent every turn. Choose this for open-ended work such as planning, research, debate, or design, where who should act next depends on the discussion.${rosterInstruction}\n\nIf you choose "sequential", the specialists reply with only a bare value each turn. Your first delegation must ask for the sequence's first value exactly as written in the objective — for "count down from 10 to 1" the first value is 10, not 9 — phrased as a direct instruction like "Reply with only: 10", and record it in statePatch (for example {"currentNumber":10}). Every later delegation names the one next value the same way.\n\nA minimum of ${minimum} distinct specialist${minimum === 1 ? "" : "s"} must contribute before you may complete, so your first turn must delegate, not complete.\n\nReply with JSON only, without markdown fences. If you chose "sequential":\n{"message":"why sequential fits this objective","plan":{"turnPolicy":"sequential"${rosterField}},"statePatch":{"phase":"starting","progress":"concise progress"},"decision":{"type":"delegate","assignment":"the first step of the sequence"}}\nIf you chose "facilitated":\n{"message":"why facilitated fits, and one reason per chosen Agent","plan":{"turnPolicy":"facilitated"${rosterField}},"statePatch":{"phase":"starting","progress":"concise progress"},"decision":{"type":"delegate","agentId":"the name or id of the first Agent to act","assignment":"the first assignment for that Agent"}}`;
     }
     if (task.turnPolicy === "sequential") {
       const rotation = task.specialistAgentIds
@@ -547,7 +550,7 @@ export class TeamTaskService {
         })
         .join("\n");
       const minimumContributors = Math.min(2, task.specialistAgentIds.length);
-      return common + `\n\nYou are the Lead Agent coordinating a turn-by-turn sequential task. The platform rotates through the specialist pool in the fixed order below automatically — you do NOT choose who acts next. Each turn make exactly one decision:\n- If the sequence is not finished, delegate the single next atomic step. Write an assignment that states exactly what the next specialist must contribute, derived from the latest contribution in the transcript (for example, "the last number was 7, reply with exactly 6"). Record progress in statePatch (for example {"currentNumber":6}).\n- If the transcript shows the sequence's final required contribution has been made, complete the task with a short summary.\nDo not skip, repeat, or reorder steps, and do not try to produce the whole sequence yourself. A minimum of ${minimumContributors} distinct specialist turn${minimumContributors === 1 ? "" : "s"} must occur before completion.\n\nSpecialist rotation order:\n${rotation}\n\nReply with JSON only, without markdown fences, using one of these shapes:\n{"message":"progress note for the Activity log","statePatch":{"phase":"in-progress","progress":"concise progress"},"decision":{"type":"delegate","assignment":"the single next step for the next specialist"}}\n{"message":"the sequence is complete","statePatch":{"phase":"complete"},"decision":{"type":"complete","summary":"final result of the sequence"}}`;
+      return common + `\n\nYou are the Lead Agent coordinating a turn-by-turn sequential task. The platform rotates through the specialist pool in the fixed order below automatically — you do NOT choose who acts next. Each turn make exactly one decision:\n- If the sequence is not finished, delegate the single next atomic step. The specialist will reply with only a bare value, so write the assignment as a direct instruction that names that exact value, e.g. "The last number was 7. Reply with only: 6". Do not ask them to explain or confirm. Record progress in statePatch (for example {"currentNumber":6}).\n- If the transcript shows the sequence's final required contribution has been made, complete the task with a short summary.\nDo not skip, repeat, or reorder steps, and do not try to produce the whole sequence yourself. A minimum of ${minimumContributors} distinct specialist turn${minimumContributors === 1 ? "" : "s"} must occur before completion.\n\nSpecialist rotation order:\n${rotation}\n\nReply with JSON only, without markdown fences, using one of these shapes:\n{"message":"progress note for the Activity log","statePatch":{"phase":"in-progress","progress":"concise progress"},"decision":{"type":"delegate","assignment":"The last number was 7. Reply with only: 6"}}\n{"message":"the sequence is complete","statePatch":{"phase":"complete"},"decision":{"type":"complete","summary":"final result of the sequence"}}`;
     }
     const contributedIds = this.contributedSpecialistIds(task.id);
     const collaborationRounds = this.specialistContributionCount(task.id);
@@ -581,17 +584,31 @@ export class TeamTaskService {
     return match?.id ?? null;
   }
 
-  /** Resolve a list of Agent references to a deduped list of IDs; throws on any unknown ref. */
-  private resolveRefs(pool: string[], refs: string[]): string[] {
-    const ids: string[] = [];
+  private poolNames(task: TeamTask): string {
+    const agents = this.store.snapshot().agents;
+    return task.specialistAgentIds
+      .map((id) => agents.find((agent) => agent.id === id)?.name)
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  /**
+   * Resolve the Lead's proposed roster references (ids or names) against the
+   * candidate pool. Unresolvable entries — a hallucinated name, or the Lead
+   * naming itself — are dropped rather than failing the whole turn.
+   */
+  private resolveRosterRefs(task: TeamTask, refs: string[]): { roster: string[]; dropped: string[] } {
+    const roster: string[] = [];
+    const dropped: string[] = [];
     for (const ref of refs) {
-      const id = this.resolveAgentRef(pool, ref);
-      if (!id) {
-        throw new Error(`The Lead's roster includes an Agent that is not in the available pool: "${ref}"`);
+      const id = this.resolveAgentRef(task.specialistAgentIds, ref);
+      if (id) {
+        if (!roster.includes(id)) roster.push(id);
+      } else {
+        dropped.push(ref.trim());
       }
-      if (!ids.includes(id)) ids.push(id);
     }
-    return ids;
+    return { roster, dropped };
   }
 
   /**
@@ -601,7 +618,7 @@ export class TeamTaskService {
    */
   private plannedRoster(task: TeamTask, decision: LeadDecision): string[] {
     if (task.turnPolicy === null && task.agentSelection === "lead" && decision.plan?.rosterAgentIds) {
-      return this.resolveRefs(task.specialistAgentIds, decision.plan.rosterAgentIds);
+      return this.resolveRosterRefs(task, decision.plan.rosterAgentIds).roster;
     }
     return task.specialistAgentIds;
   }
@@ -616,12 +633,14 @@ export class TeamTaskService {
     }
     if (task.agentSelection !== "lead") return;
     if (!decision.plan.rosterAgentIds || decision.plan.rosterAgentIds.length < 1) {
-      throw new Error("The Lead must choose a roster (plan.rosterAgentIds) from the available Agents");
+      throw new Error("The Lead must choose a roster (plan.rosterAgentIds) from these Agents: " + this.poolNames(task));
     }
-    const roster = this.resolveRefs(task.specialistAgentIds, decision.plan.rosterAgentIds);
+    const { roster } = this.resolveRosterRefs(task, decision.plan.rosterAgentIds);
     const minimum = Math.min(2, task.specialistAgentIds.length);
     if (roster.length < minimum) {
-      throw new Error("The Lead's roster must include at least " + minimum + " Agents");
+      throw new Error(
+        `The Lead's roster must name at least ${minimum} of these exact Agents: ${this.poolNames(task)}`,
+      );
     }
   }
 
@@ -631,6 +650,25 @@ export class TeamTaskService {
    * happened, so turn-taking is reproducible regardless of Lead output and
    * generalises to any pool size and any sequence length.
    */
+  /**
+   * In sequential mode the Lead's assignment is "… Reply with only: X". If the
+   * specialist wrapped X in a sentence anyway, reduce the chat-visible message to
+   * the bare value X. Only ever shortens, and only when X is clearly present.
+   */
+  private tightenSequentialMessage(assignment: string | null, message: string): string {
+    const match = assignment?.match(/reply with only:\s*(.+?)\s*$/i);
+    if (!match?.[1]) return message;
+    const clean = (value: string) =>
+      value.trim().replace(/^["'`*]+|["'`*]+$/g, "").replace(/[.。!]+$/, "").trim();
+    const expected = clean(match[1]);
+    if (!expected) return message;
+    if (clean(message).toLowerCase() === expected.toLowerCase()) return expected;
+    const escaped = expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const bounded = new RegExp(`(^|[^\\w-])${escaped}([^\\w-]|$)`, "i");
+    if (message.length > expected.length + 2 && bounded.test(message)) return expected;
+    return message;
+  }
+
   private nextSequentialSpecialistId(database: Database, task: TeamTask): string {
     const handoffs = database.teamTaskEvents.filter(
       (event) => event.taskId === task.id && event.type === "delegated",

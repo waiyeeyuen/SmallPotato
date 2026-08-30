@@ -535,24 +535,29 @@ export default function App() {
         >
           <span>◇</span> Team tasks
         </button>
-        <div className="sidebar-label"><span>Your agents</span><span>{agents.length}</span></div>
-        <nav className="agent-list" aria-label="Agents">
-          {agents.map((agent) => (
-            <button
-              className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
-              key={agent.id}
-              onClick={() => {
-                setSelectedId(agent.id);
-                setView("playground");
-              }}
-            >
-              <span className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</span>
-              <span className="agent-card-copy"><strong>{agent.name}</strong><span>{agent.description || "Coding agent"}</span></span>
-              <span className={"mini-dot mini-" + agent.status} />
-            </button>
-          ))}
-          {agents.length === 0 && <div className="empty-sidebar">No agents for {user.displayName}.</div>}
-        </nav>
+        <details className="sidebar-agents" open>
+          <summary className="sidebar-label">
+            <span>Your agents</span>
+            <span className="sidebar-count">{agents.length}</span>
+          </summary>
+          <nav className="agent-list" aria-label="Agents">
+            {agents.map((agent) => (
+              <button
+                className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
+                key={agent.id}
+                onClick={() => {
+                  setSelectedId(agent.id);
+                  setView("playground");
+                }}
+              >
+                <span className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</span>
+                <span className="agent-card-copy"><strong>{agent.name}</strong><span>{agent.description || "Coding agent"}</span></span>
+                <span className={"mini-dot mini-" + agent.status} />
+              </button>
+            ))}
+            {agents.length === 0 && <div className="empty-sidebar">No agents for {user.displayName}.</div>}
+          </nav>
+        </details>
         <div className="runtime-card">
           <span className="eyebrow">Enforcement boundary</span>
           <strong>{system?.runtimeProvider === "container" ? "Disposable container" : "Local development"}</strong>

@@ -761,6 +761,32 @@ describe("TeamTaskService", () => {
     ).toEqual([2, 1]);
   });
 
+  it("trims a chatty sequential reply down to the bare value in the chat", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const research = await agents.createAgent(actor, { name: "Research", description: "Confirms facts" });
+    const check = await agents.createAgent(actor, { name: "Check" });
+    runner.script.push(
+      planSequential("Reply with only: 3", { statePatch: { currentNumber: 3 } }),
+      specialist("Research confirms the countdown starts at 3 — the first value is 3.", "Verified."),
+      sequentialDelegate("The last number was 3. Reply with only: 2", { currentNumber: 2 }),
+      specialist("The next number is 2.", "Counted down."),
+      sequentialDelegate("The last number was 2. Reply with only: 1", { currentNumber: 1 }),
+      specialist("1", "Done."),
+      complete("Counted down to 1."),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Count down from 3 to 1",
+      leadAgentId: lead.id,
+      specialistAgentIds: [research.id, check.id],
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    expect(
+      teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result").map((event) => event.chatContent),
+    ).toEqual(["3", "2", "1"]);
+  });
+
   it("reports the specific problem when the Lead's first turn is malformed", async () => {
     const runner = new ScriptedRunner();
     const { agents, teamTasks } = await makeServices(runner);
@@ -783,27 +809,50 @@ describe("TeamTaskService", () => {
     expect(b.id).toBeDefined();
   });
 
-  it("rejects a Lead roster that includes an Agent outside the reserved pool", async () => {
+  it("drops an unresolvable roster entry (e.g. the Lead naming itself) and proceeds", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const alpha = await agents.createAgent(actor, { name: "Alpha" });
+    const bravo = await agents.createAgent(actor, { name: "Bravo" });
+    const spare = await agents.createAgent(actor, { name: "Spare" });
+    runner.script.push(
+      // "Lead" is not a roster member; it should be ignored, leaving Alpha + Bravo.
+      planFacilitated("Alpha", "Kick off", { rosterAgentIds: ["Lead", "Alpha", "Bravo"] }),
+      specialist("Alpha done."),
+      delegate("Bravo", "Continue"),
+      specialist("Bravo done."),
+      complete("Done with Alpha and Bravo."),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Ignore a bad roster entry",
+      leadAgentId: lead.id,
+      specialistAgentIds: [],
+      agentSelection: "lead",
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    expect(teamTasks.getTask(task.id).specialistAgentIds).toEqual([alpha.id, bravo.id]);
+    expect(agents.getAgent(actor, spare.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
+  });
+
+  it("pauses only when the Lead's roster has too few valid Agents", async () => {
     const runner = new ScriptedRunner();
     const { agents, teamTasks } = await makeServices(runner);
     const lead = await agents.createAgent(actor, { name: "Lead" });
     const a = await agents.createAgent(actor, { name: "A" });
     const b = await agents.createAgent(actor, { name: "B" });
-    // lead.id is never in the specialist pool, so naming it in the roster is invalid.
     runner.script.push(
-      planFacilitated(a.id, "work", { rosterAgentIds: [a.id, lead.id] }),
-      planFacilitated(a.id, "work again", { rosterAgentIds: [a.id, lead.id] }),
+      planFacilitated("A", "work", { rosterAgentIds: ["A", "Ghost Agent"] }),
+      planFacilitated("A", "work again", { rosterAgentIds: ["A", "Ghost Agent"] }),
     );
     const task = await teamTasks.createTask({
-      objective: "Try to smuggle in an Agent",
+      objective: "Only one valid roster Agent",
       leadAgentId: lead.id,
       specialistAgentIds: [],
       agentSelection: "lead",
     });
     await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
-    expect(teamTasks.getTask(task.id).lastError).toContain(
-      "roster includes an Agent that is not in the available pool",
-    );
+    expect(teamTasks.getTask(task.id).lastError).toContain("at least 2 of these exact Agents");
     expect(agents.getAgent(actor, b.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
   });
 });

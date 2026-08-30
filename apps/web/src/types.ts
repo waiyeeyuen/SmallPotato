@@ -108,6 +108,8 @@ export interface SystemInfo {
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type TeamTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
+export type TeamTaskTurnPolicy = "facilitated" | "sequential";
+export type TeamAgentSelection = "user" | "lead";
 
 export interface TeamAssignment {
   id: string;
@@ -120,6 +122,8 @@ export interface TeamTask {
   objective: string;
   leadAgentId: string;
   specialistAgentIds: string[];
+  agentSelection: TeamAgentSelection;
+  turnPolicy: TeamTaskTurnPolicy | null;
   status: TeamTaskStatus;
   workspacePath: string;
   currentAgentId: string | null;
@@ -149,5 +153,7 @@ export interface TeamTaskEvent {
   assignment: string | null;
   attempt: number | null;
   statePatch: Record<string, JsonValue> | null;
+  previousReceiptHash: string | null;
+  receiptHash: string | null;
   createdAt: string;
 }

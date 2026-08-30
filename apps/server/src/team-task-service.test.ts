@@ -72,6 +72,42 @@ const specialist = (message: string, activity = "Returned the requested contribu
   activity,
 });
 
+// A Lead "delegate" decision for a sequential task (turns 2+): no agentId — the
+// platform owns rotation, the Lead only supplies the assignment text.
+const sequentialDelegate = (assignment: string, statePatch = {}) => JSON.stringify({
+  message: "Advancing the sequence.",
+  statePatch,
+  decision: { type: "delegate", assignment },
+});
+
+// The Lead's first turn: commit a coordination mode, then make the first hand-off.
+const planFacilitated = (
+  agentId: string,
+  assignment: string,
+  opts: { statePatch?: Record<string, unknown>; rosterAgentIds?: string[] } = {},
+) => JSON.stringify({
+  message: "Facilitated coordination fits this open-ended objective.",
+  plan: {
+    turnPolicy: "facilitated",
+    ...(opts.rosterAgentIds ? { rosterAgentIds: opts.rosterAgentIds } : {}),
+  },
+  statePatch: opts.statePatch ?? {},
+  decision: { type: "delegate", agentId, assignment },
+});
+
+const planSequential = (
+  assignment: string,
+  opts: { statePatch?: Record<string, unknown>; rosterAgentIds?: string[] } = {},
+) => JSON.stringify({
+  message: "This is an ordered sequence, so the platform should rotate the roster.",
+  plan: {
+    turnPolicy: "sequential",
+    ...(opts.rosterAgentIds ? { rosterAgentIds: opts.rosterAgentIds } : {}),
+  },
+  statePatch: opts.statePatch ?? {},
+  decision: { type: "delegate", assignment },
+});
+
 describe("TeamTaskService", () => {
   it("pauses an interrupted task on startup and releases its Agents", async () => {
     let rejectRun!: (reason: Error) => void;
@@ -129,7 +165,7 @@ describe("TeamTaskService", () => {
     const builder = await agents.createAgent(actor, { name: "Builder" });
     const reviewer = await agents.createAgent(actor, { name: "Reviewer" });
     runner.script.push(
-      delegate(builder.id, "Build the requested artifact", { phase: "build" }),
+      planFacilitated(builder.id, "Build the requested artifact", { statePatch: { phase: "build" } }),
       specialist("The artifact is ready for review.", "Built the artifact and ran its tests."),
       delegate(reviewer.id, "Review the implementation and respond to the Builder result", { phase: "review" }),
       specialist("The artifact is ready.", "Reviewed the artifact; it is ready."),
@@ -153,11 +189,14 @@ describe("TeamTaskService", () => {
     expect(runner.requests[2]?.threadId).toBe("team-thread-" + lead.id);
     expect(agents.getAgent(actor, lead.id).codexThreadId).toBeNull();
     expect(agents.getAgent(actor, builder.id).activeTeamTaskId).toBeNull();
+    // Same 14 events as before plus one coordination_plan on the Lead's first turn.
     expect(teamTasks.getEvents(task.id).map((event) => event.sequence)).toEqual(
-      Array.from({ length: 14 }, (_, index) => index + 1),
+      Array.from({ length: 15 }, (_, index) => index + 1),
     );
     expect(teamTasks.getEvents(task.id).filter((event) => event.type === "turn_started"))
       .toHaveLength(5);
+    expect(teamTasks.getEvents(task.id).filter((event) => event.type === "coordination_plan"))
+      .toHaveLength(1);
   });
 
   it("dynamically chooses relevant specialists and shares earlier opinions", async () => {
@@ -168,7 +207,7 @@ describe("TeamTaskService", () => {
     const critic = await agents.createAgent(actor, { name: "Practical Critic", description: "Challenges recommendations using context and tradeoffs" });
     const engineer = await agents.createAgent(actor, { name: "Engineer", description: "Software implementation specialist" });
     runner.script.push(
-      delegate(stylist.id, "Recommend red or black and explain the visual effect", { phase: "discussion" }),
+      planFacilitated(stylist.id, "Recommend red or black and explain the visual effect", { statePatch: { phase: "discussion" } }),
       specialist("Wear red when you want energy and visibility; choose black for calm versatility.", "Compared the two colors."),
       delegate(critic.id, "Challenge the Stylist's recommendation using the exact prior opinion and identify the deciding context"),
       specialist("Building on the Stylist: choose red for a social statement, but black wins when the setting is unknown because it is easier to adapt.", "Pressure-tested the prior opinion."),
@@ -207,7 +246,7 @@ describe("TeamTaskService", () => {
     const lead = await agents.createAgent(actor, { name: "Lead" });
     const specialistAgent = await agents.createAgent(actor, { name: "Specialist" });
     runner.script.push(
-      delegate(specialistAgent.id, "Complete the first task"),
+      planFacilitated(specialistAgent.id, "Complete the first task"),
       specialist("First result"),
       complete("First task complete"),
     );
@@ -219,7 +258,7 @@ describe("TeamTaskService", () => {
     await expect.poll(() => teamTasks.getTask(first.id).status).toBe("completed");
 
     runner.script.push(
-      delegate(specialistAgent.id, "Complete the second task"),
+      planFacilitated(specialistAgent.id, "Complete the second task"),
       specialist("Second result"),
       complete("Second task complete"),
     );
@@ -239,7 +278,7 @@ describe("TeamTaskService", () => {
     const lead = await agents.createAgent(actor, { name: "Lead" });
     const specialistAgent = await agents.createAgent(actor, { name: "Specialist" });
     runner.script.push(
-      delegate(specialistAgent.id, "Perform the risky step"),
+      planFacilitated(specialistAgent.id, "Perform the risky step"),
       new Error("temporary failure"),
       new Error("still unavailable"),
       delegate(specialistAgent.id, "Retry with a safer alternative after reviewing the recorded failure"),
@@ -267,7 +306,7 @@ describe("TeamTaskService", () => {
     const first = await agents.createAgent(actor, { name: "First" });
     const second = await agents.createAgent(actor, { name: "Second" });
     runner.script.push(
-      delegate(first.id, "Attempt the first contribution"),
+      planFacilitated(first.id, "Attempt the first contribution"),
       new Error("temporary failure"),
       new Error("still unavailable"),
       complete("This is too early."),
@@ -305,7 +344,7 @@ describe("TeamTaskService", () => {
     let releaseInterruptedLead!: (output: string) => void;
     const interruptedLead = new Promise<string>((resolve) => { releaseInterruptedLead = resolve; });
     runner.script.push(
-      delegate(first.id, "Provide the first contribution"),
+      planFacilitated(first.id, "Provide the first contribution"),
       specialist("First contribution complete."),
       interruptedLead,
     );
@@ -336,64 +375,205 @@ describe("TeamTaskService", () => {
     ]);
   });
 
-  it("coordinates a transcript-aware 10-to-1 countdown with dynamic Agent selection", async () => {
+  it("runs a deterministic 10-to-1 countdown under the sequential turn policy", async () => {
     const runner = new ScriptedRunner();
     const { agents, teamTasks } = await makeServices(runner);
     const lead = await agents.createAgent(actor, { name: "Lead" });
     const counterA = await agents.createAgent(actor, { name: "Counter A" });
     const counterB = await agents.createAgent(actor, { name: "Counter B" });
     const counterC = await agents.createAgent(actor, { name: "Counter C" });
-    const dynamicOrder = [counterC.id, counterA.id, counterC.id, counterB.id, counterA.id, counterB.id, counterC.id, counterA.id, counterC.id, counterB.id];
+    // The Lead picks "sequential" on turn 1 and never names an agent afterwards —
+    // the platform rotates A -> B -> C -> A ...
     for (let number = 10; number >= 1; number -= 1) {
-      runner.script.push(delegate(
-        dynamicOrder[10 - number]!,
-        number === 10 ? "Start with 10" : "Read the previous number and continue with exactly " + number,
-        { currentNumber: number },
-      ));
+      const assignment = number === 10
+        ? "Start the sequence with the first value, 10"
+        : "The last number was " + (number + 1) + "; reply with exactly " + number;
+      runner.script.push(
+        number === 10
+          ? planSequential(assignment, { statePatch: { currentNumber: 10 } })
+          : sequentialDelegate(assignment, { currentNumber: number }),
+      );
       runner.script.push(specialist(String(number), "Returned countdown value " + number + "."));
     }
-    runner.script.push(complete("Countdown finished."));
+    runner.script.push(complete("Countdown finished at 1."));
     const task = await teamTasks.createTask({
-      objective: "Count down from 10 to 1",
+      objective: "Count down from 10 to 1, one number per turn",
       leadAgentId: lead.id,
       specialistAgentIds: [counterA.id, counterB.id, counterC.id],
     });
     await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+
     const allEvents = teamTasks.getEvents(task.id);
-    const specialistEvents = allEvents
-      .filter((event) => event.type === "specialist_result");
+    const specialistEvents = allEvents.filter((event) => event.type === "specialist_result");
     const outputs = specialistEvents.map((event) => Number(event.chatContent));
+
+    // Exact sequence, in order, terminating at exactly 1.
     expect(outputs).toEqual([10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
-    expect(specialistEvents.map((event) => event.content)).toEqual(
-      Array.from({ length: 10 }, (_, index) => "Returned countdown value " + (10 - index) + "."),
-    );
-    expect(allEvents
-      .filter((event) => event.type !== "specialist_result")
-      .every((event) => event.chatContent === null)).toBe(true);
+    expect(specialistEvents).toHaveLength(10);
+
+    // Turn-taking is decided by the engine, not the Lead: strict A/B/C rotation.
+    expect(specialistEvents.map((event) => event.agentId)).toEqual([
+      counterA.id, counterB.id, counterC.id,
+      counterA.id, counterB.id, counterC.id,
+      counterA.id, counterB.id, counterC.id,
+      counterA.id,
+    ]);
     expect(runner.requests.map((request) => request.agentId)).toEqual([
-      lead.id, counterC.id,
-      lead.id, counterA.id,
-      lead.id, counterC.id,
-      lead.id, counterB.id,
       lead.id, counterA.id,
       lead.id, counterB.id,
       lead.id, counterC.id,
       lead.id, counterA.id,
-      lead.id, counterC.id,
       lead.id, counterB.id,
+      lead.id, counterC.id,
+      lead.id, counterA.id,
+      lead.id, counterB.id,
+      lead.id, counterC.id,
+      lead.id, counterA.id,
       lead.id,
     ]);
-    expect(runner.requests[0]?.prompt).toContain("dynamic conversation facilitator");
-    expect(runner.requests[0]?.prompt).toContain("not by list order or a fixed rotation");
-    expect(runner.requests[1]?.prompt).toContain("Act as one turn in a continuing multi-Agent conversation");
-    expect(runner.requests[2]?.prompt).toContain("Conversation message: 10");
-    expect(runner.requests[3]?.prompt).toContain("Conversation message: 10");
-    expect(runner.requests[0]?.prompt).toContain("do not ask specialists to create files");
-    expect(runner.requests[1]?.prompt).toContain("Do not create, edit, or persist a file or script merely to produce that result");
-    expect(runner.requests[1]?.prompt).toContain("only when the objective or assignment explicitly requests a file");
-    expect(runner.requests[1]?.prompt).toContain("When execution is explicitly requested, inspect the existing shared workspace, run the artifact");
-    expect(runner.requests[1]?.prompt).toContain("Put file operations, commands, verification, and other process detail in activity");
+
+    // The run terminated on its own (no infinite loop) well under the safety cap.
+    expect(teamTasks.getTask(task.id).turnCount).toBe(21);
     expect(teamTasks.getTask(task.id).sharedState.currentNumber).toBe(1);
+
+    // First specialist contribution is the sequence's starting value, not 9.
+    expect(outputs[0]).toBe(10);
+    expect(allEvents.filter((event) => event.type === "coordination_plan")).toHaveLength(1);
+
+    // Turn 1 is the planning prompt; the real sequential Lead prompt starts turn 3.
+    expect(runner.requests[0]?.prompt).toContain("This is your first turn as Lead");
+    expect(runner.requests[0]?.prompt).toContain("the first value is 10, not 9");
+    expect(runner.requests[1]?.prompt).toContain("This is a turn-by-turn sequential task");
+    expect(runner.requests[2]?.prompt).toContain("coordinating a turn-by-turn sequential task");
+    expect(runner.requests[2]?.prompt).toContain("rotates through the specialist pool in the fixed order");
+    expect(runner.requests[2]?.prompt).toContain("Conversation message: 10");
+    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+  });
+
+  it("generalises the sequential policy to a different range and two agents", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const first = await agents.createAgent(actor, { name: "First" });
+    const second = await agents.createAgent(actor, { name: "Second" });
+    for (let number = 20; number >= 15; number -= 1) {
+      runner.script.push(
+        number === 20
+          ? planSequential("Reply with exactly 20", { statePatch: { currentNumber: 20 } })
+          : sequentialDelegate("Reply with exactly " + number, { currentNumber: number }),
+      );
+      runner.script.push(specialist(String(number), "Value " + number));
+    }
+    runner.script.push(complete("Reached 15."));
+    const task = await teamTasks.createTask({
+      objective: "Count down from 20 to 15",
+      leadAgentId: lead.id,
+      specialistAgentIds: [first.id, second.id],
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    const specialistEvents = teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result");
+    expect(specialistEvents.map((event) => Number(event.chatContent))).toEqual([20, 19, 18, 17, 16, 15]);
+    expect(specialistEvents.map((event) => event.agentId)).toEqual([
+      first.id, second.id, first.id, second.id, first.id, second.id,
+    ]);
+  });
+
+  it("recovers from a specialist error mid-sequence without hanging or skipping", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const counterA = await agents.createAgent(actor, { name: "Counter A" });
+    const counterB = await agents.createAgent(actor, { name: "Counter B" });
+    runner.script.push(
+      planSequential("Start the sequence with the first value, 4", { statePatch: { currentNumber: 4 } }),
+      specialist("4", "Returned 4."),
+      sequentialDelegate("The last number was 4; reply with exactly 3", { currentNumber: 3 }),
+      new Error("model timeout"),
+      new Error("model timeout again"),
+      // Turn failed twice -> control returns to the Lead, which re-issues the step.
+      sequentialDelegate("Recover: the last number was 4; reply with exactly 3", { currentNumber: 3 }),
+      specialist("3", "Returned 3."),
+      sequentialDelegate("The last number was 3; reply with exactly 2", { currentNumber: 2 }),
+      specialist("2", "Returned 2."),
+      sequentialDelegate("The last number was 2; reply with exactly 1", { currentNumber: 1 }),
+      specialist("1", "Returned 1."),
+      complete("Countdown recovered and finished at 1."),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Count down from 4 to 1",
+      leadAgentId: lead.id,
+      specialistAgentIds: [counterA.id, counterB.id],
+      turnPolicy: "sequential",
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    const types = teamTasks.getEvents(task.id).map((event) => event.type);
+    expect(types).toContain("turn_retry");
+    expect(types).toContain("turn_failed");
+    const outputs = teamTasks.getEvents(task.id)
+      .filter((event) => event.type === "specialist_result")
+      .map((event) => Number(event.chatContent));
+    expect(outputs).toEqual([4, 3, 2, 1]);
+    expect(teamTasks.getTask(task.id).sharedState.currentNumber).toBe(1);
+    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+  });
+
+  it("lets the Lead delegate open-ended work to relevant specialists under the facilitated policy", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead", description: "Event planning coordinator" });
+    const venue = await agents.createAgent(actor, { name: "Venue Scout", description: "Finds and books venues" });
+    const catering = await agents.createAgent(actor, { name: "Caterer", description: "Plans food and drink" });
+    const budget = await agents.createAgent(actor, { name: "Budget Analyst", description: "Tracks spend against budget" });
+    runner.script.push(
+      planFacilitated(venue.id, "Propose a venue for 40 people", { statePatch: { phase: "venue" } }),
+      specialist("Community hall, capacity 60, available next Friday.", "Checked three venues."),
+      delegate(catering.id, "Plan catering for 40 at the proposed hall", { phase: "catering" }),
+      specialist("Buffet for 40 with vegetarian options, delivered on site.", "Priced two caterers."),
+      delegate(budget.id, "Check the venue and catering plan against a $2000 budget", { phase: "budget" }),
+      specialist("Venue $600 + catering $1100 = $1700, within budget.", "Reconciled quotes."),
+      complete("Booked the community hall with a $1700 buffet plan, $300 under budget."),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Plan a 40-person team offsite within a $2000 budget",
+      leadAgentId: lead.id,
+      specialistAgentIds: [venue.id, catering.id, budget.id],
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    expect(teamTasks.getTask(task.id).turnPolicy).toBe("facilitated");
+    expect(runner.requests.map((request) => request.agentId)).toEqual([
+      lead.id, venue.id, lead.id, catering.id, lead.id, budget.id, lead.id,
+    ]);
+    expect(teamTasks.getTask(task.id).completionSummary).toContain("under budget");
+    expect(runner.requests[0]?.prompt).toContain("This is your first turn as Lead");
+    expect(runner.requests[2]?.prompt).toContain("dynamic conversation facilitator");
+    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+  });
+
+  it("detects tampering in the coordination event hash-chain", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks, store } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const specialistAgent = await agents.createAgent(actor, { name: "Specialist" });
+    runner.script.push(
+      planFacilitated(specialistAgent.id, "Do the thing"),
+      specialist("Done."),
+      complete("Complete."),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Produce a verifiable trail",
+      leadAgentId: lead.id,
+      specialistAgentIds: [specialistAgent.id],
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+
+    await store.mutate((database) => {
+      const target = database.teamTaskEvents.find(
+        (event) => event.taskId === task.id && event.type === "specialist_result",
+      );
+      if (target) target.chatContent = "Tampered.";
+    });
+    expect(teamTasks.verifyEventChain(task.id)).toBe(false);
   });
 
   it("rejects a Lead selection outside the authorized specialist pool", async () => {
@@ -403,8 +583,8 @@ describe("TeamTaskService", () => {
     const selected = await agents.createAgent(actor, { name: "Selected Specialist" });
     const outsider = await agents.createAgent(actor, { name: "Unselected Outsider" });
     runner.script.push(
-      delegate(outsider.id, "Attempt unauthorized work"),
-      delegate(outsider.id, "Attempt unauthorized work again"),
+      planFacilitated(outsider.id, "Attempt unauthorized work"),
+      planFacilitated(outsider.id, "Attempt unauthorized work again"),
     );
 
     const task = await teamTasks.createTask({
@@ -427,7 +607,11 @@ describe("TeamTaskService", () => {
     const second = await agents.createAgent(actor, { name: "Second" });
     for (let round = 1; round <= 12; round += 1) {
       const agentId = round % 2 === 1 ? first.id : second.id;
-      runner.script.push(delegate(agentId, "Advance discussion round " + round));
+      runner.script.push(
+        round === 1
+          ? planFacilitated(agentId, "Advance discussion round 1")
+          : delegate(agentId, "Advance discussion round " + round),
+      );
       runner.script.push(specialist("Contribution " + round));
     }
     runner.script.push(
@@ -447,5 +631,179 @@ describe("TeamTaskService", () => {
     expect(teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result"))
       .toHaveLength(12);
     expect(teamTasks.getTask(task.id).turnCount).toBe(26);
+  });
+
+  it("lets the Lead commit the coordination mode on its first turn and locks it", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const counterA = await agents.createAgent(actor, { name: "Counter A" });
+    const counterB = await agents.createAgent(actor, { name: "Counter B" });
+    runner.script.push(
+      planSequential("Start the sequence with the first value, 3", { statePatch: { currentNumber: 3 } }),
+      specialist("3", "Returned 3."),
+      // A later turn tries to switch to facilitated — the platform must ignore it.
+      JSON.stringify({
+        message: "Trying to change my mind.",
+        plan: { turnPolicy: "facilitated" },
+        statePatch: { currentNumber: 2 },
+        decision: { type: "delegate", assignment: "The last number was 3; reply with exactly 2" },
+      }),
+      specialist("2", "Returned 2."),
+      sequentialDelegate("The last number was 2; reply with exactly 1", { currentNumber: 1 }),
+      specialist("1", "Returned 1."),
+      complete("Counted down to 1."),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Count down from 3 to 1",
+      leadAgentId: lead.id,
+      specialistAgentIds: [counterA.id, counterB.id],
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+
+    expect(teamTasks.getTask(task.id).turnPolicy).toBe("sequential");
+    expect(teamTasks.getEvents(task.id).filter((event) => event.type === "coordination_plan"))
+      .toHaveLength(1);
+    const specialistEvents = teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result");
+    expect(specialistEvents.map((event) => Number(event.chatContent))).toEqual([3, 2, 1]);
+    // Rotation kept going even though a later turn tried to change modes.
+    expect(specialistEvents.map((event) => event.agentId)).toEqual([counterA.id, counterB.id, counterA.id]);
+  });
+
+  it("reserves the whole ready pool then releases the Agents the Lead leaves out", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const used = await agents.createAgent(actor, { name: "Used One", description: "Relevant" });
+    const alsoUsed = await agents.createAgent(actor, { name: "Used Two", description: "Also relevant" });
+    const unused = await agents.createAgent(actor, { name: "Unused", description: "Not relevant here" });
+    runner.script.push(
+      planFacilitated(used.id, "Handle the relevant part", { rosterAgentIds: [used.id, alsoUsed.id] }),
+      specialist("First part done."),
+      delegate(alsoUsed.id, "Handle the rest"),
+      specialist("Second part done."),
+      complete("Both relevant specialists contributed."),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Do a two-part job with only the relevant Agents",
+      leadAgentId: lead.id,
+      specialistAgentIds: [],
+      agentSelection: "lead",
+    });
+    // Every ready Agent is reserved up front.
+    expect(agents.getAgent(actor, unused.id)).toMatchObject({ status: "busy", activeTeamTaskId: task.id });
+
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+
+    // The Lead's roster is now the task's specialist list; the unused Agent was released.
+    expect(teamTasks.getTask(task.id).specialistAgentIds).toEqual([used.id, alsoUsed.id]);
+    expect(agents.getAgent(actor, unused.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
+    expect(agents.getAgent(actor, used.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
+    const planEvent = teamTasks.getEvents(task.id).find((event) => event.type === "coordination_plan");
+    expect(planEvent?.content).toContain("2 specialists");
+  });
+
+  it("accepts a Lead roster and delegate target given by Agent name, not id", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const alpha = await agents.createAgent(actor, { name: "Alpha", description: "relevant" });
+    const bravo = await agents.createAgent(actor, { name: "Bravo", description: "relevant" });
+    const spare = await agents.createAgent(actor, { name: "Spare", description: "not relevant" });
+    runner.script.push(
+      planFacilitated("Alpha", "Kick off the work", { rosterAgentIds: ["Alpha", "Bravo"] }),
+      specialist("Alpha done."),
+      delegate("Bravo", "Continue the work"),
+      specialist("Bravo done."),
+      complete("Finished with the two named Agents."),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Use Agents referred to by name",
+      leadAgentId: lead.id,
+      specialistAgentIds: [],
+      agentSelection: "lead",
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    expect(teamTasks.getTask(task.id).specialistAgentIds).toEqual([alpha.id, bravo.id]);
+    expect(agents.getAgent(actor, spare.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
+    expect(
+      teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result").map((event) => event.agentId),
+    ).toEqual([alpha.id, bravo.id]);
+  });
+
+  it("tolerates odd casing and a null agentId in the sequential first-turn plan", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const a = await agents.createAgent(actor, { name: "A" });
+    const b = await agents.createAgent(actor, { name: "B" });
+    runner.script.push(
+      JSON.stringify({
+        message: "This is a sequence.",
+        plan: { turnPolicy: " SEQUENTIAL " },
+        statePatch: { currentNumber: 2 },
+        decision: { type: "delegate", agentId: null, assignment: "Start with the first value, 2" },
+      }),
+      specialist("2", "Returned 2."),
+      sequentialDelegate("The last number was 2; reply with exactly 1", { currentNumber: 1 }),
+      specialist("1", "Returned 1."),
+      complete("Counted down to 1."),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Count down from 2 to 1",
+      leadAgentId: lead.id,
+      specialistAgentIds: [a.id, b.id],
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    expect(teamTasks.getTask(task.id).turnPolicy).toBe("sequential");
+    expect(
+      teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result").map((event) => Number(event.chatContent)),
+    ).toEqual([2, 1]);
+  });
+
+  it("reports the specific problem when the Lead's first turn is malformed", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const a = await agents.createAgent(actor, { name: "A" });
+    const b = await agents.createAgent(actor, { name: "B" });
+    const noPlan = JSON.stringify({
+      message: "Forgot the plan.",
+      statePatch: {},
+      decision: { type: "delegate", agentId: a.id, assignment: "go" },
+    });
+    runner.script.push(noPlan, noPlan);
+    const task = await teamTasks.createTask({
+      objective: "Malformed first turn",
+      leadAgentId: lead.id,
+      specialistAgentIds: [a.id, b.id],
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
+    expect(teamTasks.getTask(task.id).lastError).toContain("first turn must include a coordination plan");
+    expect(b.id).toBeDefined();
+  });
+
+  it("rejects a Lead roster that includes an Agent outside the reserved pool", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const a = await agents.createAgent(actor, { name: "A" });
+    const b = await agents.createAgent(actor, { name: "B" });
+    // lead.id is never in the specialist pool, so naming it in the roster is invalid.
+    runner.script.push(
+      planFacilitated(a.id, "work", { rosterAgentIds: [a.id, lead.id] }),
+      planFacilitated(a.id, "work again", { rosterAgentIds: [a.id, lead.id] }),
+    );
+    const task = await teamTasks.createTask({
+      objective: "Try to smuggle in an Agent",
+      leadAgentId: lead.id,
+      specialistAgentIds: [],
+      agentSelection: "lead",
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
+    expect(teamTasks.getTask(task.id).lastError).toContain(
+      "roster includes an Agent that is not in the available pool",
+    );
+    expect(agents.getAgent(actor, b.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
   });
 });

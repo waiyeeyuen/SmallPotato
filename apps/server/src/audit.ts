@@ -15,6 +15,17 @@ export function receiptHash(
     .digest("hex");
 }
 
+/**
+ * Generic tamper-evident hash-chain link, shared by the authorization receipt
+ * chain (above) and the multi-agent coordination event log so both trails are
+ * verifiable the same way.
+ */
+export function chainHash(payload: unknown, previousHash: string | null): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ payload, previousHash }))
+    .digest("hex");
+}
+
 export function verifyReceiptChain(decisions: PolicyDecision[]): boolean {
   let previous: string | null = null;
   for (const decision of decisions) {

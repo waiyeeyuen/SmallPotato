@@ -30,8 +30,12 @@ const teamTaskIdParams = z.object({ id: z.string().uuid() });
 const createTeamTaskBody = z.object({
   objective: z.string().trim().min(1).max(20_000),
   leadAgentId: z.string().uuid(),
-  specialistAgentIds: z.array(z.string().uuid()).min(1).max(20),
-}).strict();
+  specialistAgentIds: z.array(z.string().uuid()).max(20).default([]),
+  agentSelection: z.enum(["user", "lead"]).optional(),
+}).strict().refine(
+  (value) => value.agentSelection === "lead" || value.specialistAgentIds.length >= 1,
+  { message: "Select at least one specialist", path: ["specialistAgentIds"] },
+);
 const loginBody = z.object({
   username: z.string().trim().min(1).max(80),
   password: z.string().min(1).max(200),
@@ -261,7 +265,11 @@ export async function createApp(
 
     app.get("/api/team-tasks/:id", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
-      return { task: teamTasks.getTask(id), events: teamTasks.getEvents(id) };
+      return {
+        task: teamTasks.getTask(id),
+        events: teamTasks.getEvents(id),
+        eventsVerified: teamTasks.verifyEventChain(id),
+      };
     });
 
     app.post("/api/team-tasks/:id/stop", async (request) => {

@@ -82,13 +82,20 @@ export const api = {
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   listTeamTasks: () => request<{ tasks: TeamTask[] }>("/api/team-tasks"),
-  createTeamTask: (body: { objective: string; leadAgentId: string; specialistAgentIds: string[] }) =>
+  createTeamTask: (body: {
+    objective: string;
+    leadAgentId: string;
+    specialistAgentIds: string[];
+    agentSelection: TeamTask["agentSelection"];
+  }) =>
     request<{ task: TeamTask }>("/api/team-tasks", {
       method: "POST",
       body: JSON.stringify(body),
     }),
   teamTask: (id: string) =>
-    request<{ task: TeamTask; events: TeamTaskEvent[] }>("/api/team-tasks/" + id),
+    request<{ task: TeamTask; events: TeamTaskEvent[]; eventsVerified: boolean }>(
+      "/api/team-tasks/" + id,
+    ),
   stopTeamTask: (id: string) =>
     request<{ task: TeamTask }>("/api/team-tasks/" + id + "/stop", { method: "POST" }),
   resumeTeamTask: (id: string) =>

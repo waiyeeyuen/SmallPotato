@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { MarkdownContent } from "./MarkdownContent";
-import type { Agent, TeamTask, TeamTaskEvent } from "./types";
+import type { Agent, TeamAgentSelection, TeamTask, TeamTaskEvent } from "./types";
 
 interface Props {
   agents: Agent[];
@@ -59,8 +59,10 @@ export function TeamTaskView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [task, setTask] = useState<TeamTask | null>(null);
   const [events, setEvents] = useState<TeamTaskEvent[]>([]);
+  const [eventsVerified, setEventsVerified] = useState<boolean | null>(null);
   const [objective, setObjective] = useState("");
   const [leadId, setLeadId] = useState("");
+  const [agentSelection, setAgentSelection] = useState<TeamAgentSelection>("user");
   const [specialistIds, setSpecialistIds] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [, setClock] = useState(0);
@@ -96,6 +98,7 @@ export function TeamTaskView({
     const result = await api.teamTask(id);
     setTask(result.task);
     setEvents(result.events);
+    setEventsVerified(result.eventsVerified);
     setTasks((current) => {
       const next = current.some((item) => item.id === result.task.id)
         ? current.map((item) => item.id === result.task.id ? result.task : item)
@@ -115,6 +118,7 @@ export function TeamTaskView({
     if (!selectedId) {
       setTask(null);
       setEvents([]);
+      setEventsVerified(null);
       return;
     }
     let cancelled = false;
@@ -142,7 +146,9 @@ export function TeamTaskView({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [onAgentsChanged, onError, refreshDetail, refreshTasks, selectedId]);
+    // `task?.status` is a dep so that resuming a paused task (paused -> running)
+    // restarts the poll loop, which otherwise stops for any non-running status.
+  }, [onAgentsChanged, onError, refreshDetail, refreshTasks, selectedId, task?.status]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock((value) => value + 1), 1_000);
@@ -160,21 +166,28 @@ export function TeamTaskView({
     );
   }, [agents, leadId, readyAgents]);
 
+  const leadPicksAgents = agentSelection === "lead";
+  const otherReadyCount = readyAgents.filter((agent) => agent.id !== leadId).length;
+  const canSubmit = Boolean(objective.trim()) && Boolean(leadId) &&
+    (leadPicksAgents ? otherReadyCount >= 1 : specialistIds.length > 0);
+
   const createTask = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!objective.trim() || !leadId || specialistIds.length === 0) return;
+    if (!canSubmit) return;
     setSubmitting(true);
     try {
       const result = await api.createTeamTask({
         objective: objective.trim(),
         leadAgentId: leadId,
-        specialistAgentIds: specialistIds,
+        specialistAgentIds: leadPicksAgents ? [] : specialistIds,
+        agentSelection,
       });
       setObjective("");
       setSpecialistIds([]);
       setSelectedId(result.task.id);
       setTask(result.task);
       setEvents([]);
+      setEventsVerified(null);
       await Promise.all([refreshTasks(), onAgentsChanged()]);
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason));
@@ -277,27 +290,63 @@ export function TeamTaskView({
                     {readyAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                   </select>
                 </label>
-                <fieldset>
-                  <legend className="team-fieldset-title">Specialist pool</legend>
-                  <div className="team-specialist-list">
-                    {agents.filter((agent) => agent.id !== leadId).map((agent) => (
-                      <label className="team-agent-choice" key={agent.id}>
-                        <input
-                          type="checkbox"
-                          checked={specialistIds.includes(agent.id)}
-                          disabled={agent.status !== "ready" || Boolean(agent.activeTeamTaskId)}
-                          onChange={() => toggleSpecialist(agent.id)}
-                        />
-                        <span className="team-choice-avatar" aria-hidden="true">{initials(agent.name)}</span>
-                        <span className="team-choice-copy">
-                          <strong>{agent.name}</strong>
-                          <small>{specialistIds.includes(agent.id) ? "Available to Lead · " : ""}{agent.description || agent.status}</small>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
+                <fieldset className="team-selection-toggle">
+                  <legend className="team-fieldset-title">Who picks the specialists?</legend>
+                  <label className="team-agent-choice">
+                    <input
+                      type="radio"
+                      name="agentSelection"
+                      checked={agentSelection === "user"}
+                      onChange={() => setAgentSelection("user")}
+                    />
+                    <span className="team-choice-copy">
+                      <strong>I choose</strong>
+                      <small>Pick the exact specialist pool below.</small>
+                    </span>
+                  </label>
+                  <label className="team-agent-choice">
+                    <input
+                      type="radio"
+                      name="agentSelection"
+                      checked={agentSelection === "lead"}
+                      onChange={() => setAgentSelection("lead")}
+                    />
+                    <span className="team-choice-copy">
+                      <strong>The Lead chooses</strong>
+                      <small>The Lead reads the objective and picks its roster from all {otherReadyCount} other ready Agent{otherReadyCount === 1 ? "" : "s"}.</small>
+                    </span>
+                  </label>
                 </fieldset>
-                <button className="button button-primary" disabled={submitting || !objective.trim() || !leadId || specialistIds.length === 0}>
+                {leadPicksAgents ? (
+                  <div className="team-empty">
+                    <p>
+                      The Lead will pick which of your {otherReadyCount} other ready Agent{otherReadyCount === 1 ? "" : "s"} to involve, and whether to
+                      run them round-robin or as an open-ended discussion, on its first turn.
+                    </p>
+                  </div>
+                ) : (
+                  <fieldset>
+                    <legend className="team-fieldset-title">Specialist pool</legend>
+                    <div className="team-specialist-list">
+                      {agents.filter((agent) => agent.id !== leadId).map((agent) => (
+                        <label className="team-agent-choice" key={agent.id}>
+                          <input
+                            type="checkbox"
+                            checked={specialistIds.includes(agent.id)}
+                            disabled={agent.status !== "ready" || Boolean(agent.activeTeamTaskId)}
+                            onChange={() => toggleSpecialist(agent.id)}
+                          />
+                          <span className="team-choice-avatar" aria-hidden="true">{initials(agent.name)}</span>
+                          <span className="team-choice-copy">
+                            <strong>{agent.name}</strong>
+                            <small>{specialistIds.includes(agent.id) ? "Available to Lead · " : ""}{agent.description || agent.status}</small>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                )}
+                <button className="button button-primary" disabled={submitting || !canSubmit}>
                   {submitting ? <span className="spinner" aria-label="Starting" /> : "Start Team Task"}
                 </button>
               </>
@@ -336,26 +385,50 @@ export function TeamTaskView({
                 </div>
               </article>
 
-              {events.map((item) => {
+              {/* Sequential (round-robin) tasks are a turn-by-turn conversation, so
+                  every agent contribution shows here. Facilitated tasks answer one
+                  question, so only the final response shows; the per-agent
+                  deliberation stays in "Activity and coordination evidence" below. */}
+              {task.turnPolicy === "sequential" && events.map((item) => {
+                if (item.type !== "specialist_result" || !item.chatContent) return null;
                 const agentName = item.agentId ? agentMap.get(item.agentId)?.name ?? "Unknown Agent" : "Coordinator";
-                if (item.type === "specialist_result" && item.chatContent) {
-                  return <article className="team-message team-message-specialist" key={item.id}>
+                return (
+                  <article className="team-message team-message-specialist" key={item.id}>
                     <div className="team-avatar" aria-hidden="true">{initials(agentName)}</div>
-                    <div className="team-message-body"><div className="team-message-meta"><strong>{agentName}</strong><span>Specialist</span><time>{time(item.createdAt)}</time></div><div className="team-bubble"><MarkdownContent>{item.chatContent}</MarkdownContent></div></div>
-                  </article>;
-                }
-                if (["turn_retry", "turn_failed", "task_paused", "task_resumed", "task_stopped"].includes(item.type)) {
-                  return <article className={`team-system-entry team-system-entry-${item.type}`} key={item.id}>
-                    <div className="team-system-meta"><time>{time(item.createdAt)}</time></div>
-                    <div className={`team-system-message team-system-message-${item.type}`}>
-                      <span aria-hidden="true">{item.type === "turn_retry" ? "↻" : "!"}</span>
-                      <span className="team-system-content">{item.content}</span>
+                    <div className="team-message-body">
+                      <div className="team-message-meta"><strong>{agentName}</strong><span>Specialist</span><time>{time(item.createdAt)}</time></div>
+                      <div className="team-bubble"><MarkdownContent>{item.chatContent}</MarkdownContent></div>
                     </div>
-                  </article>;
-                }
-                return null;
+                  </article>
+                );
               })}
-              {task.status === "running" && <div className="team-typing"><span /><span /><span /><small>Waiting for structured Agent output</small></div>}
+              {task.status === "running" && (
+                <div className="team-typing"><span /><span /><span /><small>The team is working{task.turnPolicy === "facilitated" ? ". The final response will appear here." : "…"}</small></div>
+              )}
+              {task.status === "completed" && task.completionSummary && (
+                <article className="team-message team-message-specialist">
+                  <div className="team-avatar" aria-hidden="true">{initials(agentMap.get(task.leadAgentId)?.name ?? "Lead")}</div>
+                  <div className="team-message-body">
+                    <div className="team-message-meta">
+                      <strong>{agentMap.get(task.leadAgentId)?.name ?? "Lead"}</strong>
+                      <span>Final response</span>
+                      <time>{time(task.completedAt ?? task.updatedAt)}</time>
+                    </div>
+                    <div className="team-bubble"><MarkdownContent>{task.completionSummary}</MarkdownContent></div>
+                  </div>
+                </article>
+              )}
+              {(task.status === "failed" || task.status === "stopped" || task.status === "paused") && (
+                <article className={`team-system-entry team-system-entry-task_${task.status}`}>
+                  <div className="team-system-meta"><time>{time(task.updatedAt)}</time></div>
+                  <div className={`team-system-message team-system-message-task_${task.status}`}>
+                    <span aria-hidden="true">!</span>
+                    <span className="team-system-content">
+                      {task.lastError ?? `The team task was ${task.status} before a final response was produced.`}
+                    </span>
+                  </div>
+                </article>
+              )}
               <div ref={conversationEnd} />
             </div>
           )}
@@ -368,7 +441,14 @@ export function TeamTaskView({
                 <div>
                   <span className={`team-status team-status-${task.status}`}>{task.status}</span>
                   <h2>{oneLine(task.objective)}</h2>
-                  <p>Phase · {phaseLabel(task)} · shared state v{task.stateVersion}</p>
+                  <p>
+                    {task.agentSelection === "lead" ? "Lead-picked team" : "User-picked team"} ·{" "}
+                    {task.turnPolicy === "sequential"
+                      ? "round-robin rotation"
+                      : task.turnPolicy === "facilitated"
+                        ? "Lead-facilitated"
+                        : "choosing how to coordinate…"} · Phase · {phaseLabel(task)} · shared state v{task.stateVersion}
+                  </p>
                 </div>
                 <div className="header-actions">
                   {task.status === "running" && <button className="button button-danger" disabled={submitting} onClick={() => void action("stop")}>Stop task</button>}
@@ -429,7 +509,15 @@ export function TeamTaskView({
             </section>
 
             <section className="team-logs">
-              <header className="team-logs-heading"><span>Activity and coordination evidence</span><small>{events.length} events · shared state v{task.stateVersion}</small></header>
+              <header className="team-logs-heading">
+                <span>Activity and coordination evidence</span>
+                <small>
+                  {events.length} events · shared state v{task.stateVersion}
+                  {eventsVerified !== null && (
+                    <> · chain {eventsVerified ? "verified ✓" : "BROKEN ✗"}</>
+                  )}
+                </small>
+              </header>
               <div className="team-log-list">
                 {events.map((item) => {
                   const actor = item.agentId ? agentMap.get(item.agentId)?.name ?? "Unknown Agent" : "Platform";

@@ -27,12 +27,16 @@ function normalizeDatabase(database: Database): Database {
     })),
     teamTasks: (database.teamTasks ?? []).map((task) => ({
       ...task,
+      agentSelection: task.agentSelection ?? "user",
+      turnPolicy: task.turnPolicy ?? null,
       assignmentQueue: task.assignmentQueue ?? [],
       activeTurnStartedAt: task.activeTurnStartedAt ?? null,
     })),
     teamTaskEvents: (database.teamTaskEvents ?? []).map((event) => ({
       ...event,
       chatContent: event.chatContent ?? null,
+      previousReceiptHash: event.previousReceiptHash ?? null,
+      receiptHash: event.receiptHash ?? null,
     })),
   };
 }

@@ -2,9 +2,26 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 export type TeamTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
+/**
+ * How the platform decides which agent takes the next turn.
+ * - "facilitated": the Lead agent names the next specialist each turn (open-ended
+ *   work, e.g. planning an event — the Lead routes by relevance).
+ * - "sequential": the platform rotates through the specialist pool in a fixed
+ *   order (turn-by-turn work with a deterministic hand-off, e.g. a countdown or
+ *   any relay). The Lead still writes the assignment and decides when to stop.
+ */
+export type TeamTaskTurnPolicy = "facilitated" | "sequential";
+/**
+ * Who picks the specialist pool for a Team Task.
+ * - "user": the person selects every specialist up front (default).
+ * - "lead": the person selects only the Lead; the platform reserves all ready
+ *   Agents and the Lead names its working roster on its first turn.
+ */
+export type TeamAgentSelection = "user" | "lead";
 export type TeamTaskEventType =
   | "task_started"
   | "turn_started"
+  | "coordination_plan"
   | "lead_decision"
   | "delegated"
   | "specialist_result"
@@ -74,7 +91,15 @@ export interface TeamTask {
   id: string;
   objective: string;
   leadAgentId: string;
+  /**
+   * When agentSelection is "user" this is the fixed specialist pool. When it is
+   * "lead" this starts as every reserved candidate Agent and is narrowed to the
+   * Lead's chosen roster once the Lead's first-turn plan is applied.
+   */
   specialistAgentIds: string[];
+  agentSelection: TeamAgentSelection;
+  /** null until the Lead commits a coordination mode on its first turn. */
+  turnPolicy: TeamTaskTurnPolicy | null;
   status: TeamTaskStatus;
   workspacePath: string;
   currentAgentId: string | null;
@@ -110,6 +135,9 @@ export interface TeamTaskEvent {
   assignment: string | null;
   attempt: number | null;
   statePatch: Record<string, JsonValue> | null;
+  /** Hash-chain link to the previous event for this task (tamper-evident coordination log). */
+  previousReceiptHash: string | null;
+  receiptHash: string | null;
   createdAt: string;
 }
 
@@ -219,7 +247,9 @@ export interface UpdateAgentInput {
 export interface CreateTeamTaskInput {
   objective: string;
   leadAgentId: string;
+  /** Required when agentSelection is "user"; ignored when it is "lead". */
   specialistAgentIds: string[];
+  agentSelection?: TeamAgentSelection | undefined;
 }
 
 export interface RunnerResult {

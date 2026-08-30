@@ -40,6 +40,8 @@ describe("JsonStore", () => {
     expect((store.snapshot().teamTasks[0] as unknown as { mode: string }).mode).toBe("council");
     expect(store.snapshot().teamTasks[0]?.assignmentQueue).toEqual([]);
     expect(store.snapshot().teamTasks[0]?.activeTurnStartedAt).toBeNull();
+    expect(store.snapshot().teamTasks[0]?.turnPolicy).toBeNull();
+    expect(store.snapshot().teamTasks[0]?.agentSelection).toBe("user");
     expect(JSON.parse(await readFile(filePath + ".v4.backup", "utf8")).version).toBe(4);
     expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(5);
   });

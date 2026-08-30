@@ -21,11 +21,16 @@ const security = {
 describe("HTTP boundary", () => {
   it("exposes validated Team Task creation and detail routes", async () => {
     const task = { id: "00000000-0000-4000-8000-000000000001", objective: "Ship a feature" };
+    const createArgs: unknown[] = [];
     const teamTasks = {
-      createTask: async () => task,
+      createTask: async (input: unknown) => {
+        createArgs.push(input);
+        return task;
+      },
       listTasks: () => [task],
       getTask: () => task,
       getEvents: () => [],
+      verifyEventChain: () => true,
     } as unknown as TeamTaskService;
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service, security, teamTasks);
     const invalid = await app.inject({ method: "POST", url: "/api/team-tasks", payload: { objective: "Ship", leadAgentId: "bad", specialistAgentIds: [] } });
@@ -41,19 +46,45 @@ describe("HTTP boundary", () => {
       },
     });
     expect(extraField.statusCode).toBe(400);
-    const created = await app.inject({
+    const badSelection = await app.inject({
       method: "POST",
       url: "/api/team-tasks",
       payload: {
         objective: "Ship a feature",
         leadAgentId: "00000000-0000-4000-8000-000000000002",
         specialistAgentIds: ["00000000-0000-4000-8000-000000000003"],
+        agentSelection: "round-robin",
+      },
+    });
+    expect(badSelection.statusCode).toBe(400);
+    const noSpecialists = await app.inject({
+      method: "POST",
+      url: "/api/team-tasks",
+      payload: {
+        objective: "Ship a feature",
+        leadAgentId: "00000000-0000-4000-8000-000000000002",
+        specialistAgentIds: [],
+      },
+    });
+    expect(noSpecialists.statusCode).toBe(400);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/team-tasks",
+      payload: {
+        objective: "Ship a feature",
+        leadAgentId: "00000000-0000-4000-8000-000000000002",
+        agentSelection: "lead",
       },
     });
     expect(created.statusCode).toBe(202);
+    expect(createArgs.at(-1)).toMatchObject({ agentSelection: "lead", specialistAgentIds: [] });
     const detail = await app.inject({ method: "GET", url: "/api/team-tasks/" + task.id });
     expect(detail.statusCode).toBe(200);
-    expect(detail.json()).toMatchObject({ task: { objective: "Ship a feature" }, events: [] });
+    expect(detail.json()).toMatchObject({
+      task: { objective: "Ship a feature" },
+      events: [],
+      eventsVerified: true,
+    });
     await app.close();
   });
 

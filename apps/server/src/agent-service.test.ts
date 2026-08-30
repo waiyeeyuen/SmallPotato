@@ -180,3 +180,67 @@ describe("Agent lifecycle", () => {
     ]);
   });
 });
+
+describe("Demo agent seeding", () => {
+  async function makeSeededStack() {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-seed-test-"));
+    temporaryDirectories.push(root);
+    const config = loadConfig({
+      NODE_ENV: "development",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const store = new JsonStore(path.join(root, "data", "db.json"));
+    const security = new SecurityService(store, path.join(root, "data"));
+    const workspaces = new WorkspaceManager(path.join(root, "workspaces"));
+    const service = new AgentService(config, store, workspaces, new FakeRunner(), security);
+    return { service, security, store, workspaces, config };
+  }
+
+  const bob: RequestActor = { userId: "user-bob", username: "bob", displayName: "Bob Lim" };
+  const DEMO_NAMES = [
+    "Trip Coordinator",
+    "Flight & Hotel Scout",
+    "Budget Analyst",
+    "Weather Forecaster",
+    "Database Administrator",
+    "Frontend Engineer",
+    "Legal Counsel",
+  ];
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  it("seeds ready demo agents for both Alice and Bob, outside test env", async () => {
+    const { service, security } = await makeSeededStack();
+    await service.initialize();
+    await security.initialize();
+
+    for (const who of [actor, bob]) {
+      const agents = service.listAgents(who);
+      expect(agents.map((agent) => agent.name).sort()).toEqual([...DEMO_NAMES].sort());
+      expect(
+        agents.every(
+          (agent) =>
+            agent.status === "ready" &&
+            agent.ownerUserId === who.userId &&
+            uuid.test(agent.id) &&
+            agent.description.length > 0 &&
+            agent.principalId.length > 0,
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("is idempotent across restarts and does not duplicate or error", async () => {
+    const { service, security, store, workspaces, config } = await makeSeededStack();
+    await service.initialize();
+    await security.initialize();
+    const before = service.listAgents(actor).length + service.listAgents(bob).length;
+
+    const restarted = new AgentService(config, store, workspaces, new FakeRunner(), security);
+    await restarted.initialize();
+    expect(restarted.listAgents(actor).length + restarted.listAgents(bob).length).toBe(before);
+  });
+});

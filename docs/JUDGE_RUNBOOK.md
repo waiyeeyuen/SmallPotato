@@ -6,7 +6,7 @@ fictional content only.
 ## One-time setup
 
 1. From the repository root, run `npm run check`.
-   - Expected: typecheck, 21 tests, and both production builds pass.
+   - Expected: typecheck, the full server test suite, and both production builds pass.
    - Show: the final green test/build summary.
 2. Ensure `.env` contains valid `ARK_API_KEY` and `ARK_MODEL`, then run
    `npm run poc`.

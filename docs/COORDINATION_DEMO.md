@@ -2,13 +2,23 @@
 
 ## Demo setup
 
-Run `npm run poc`, open <http://localhost:3000>, and create three ready Agents:
+Run `npm run poc`, open <http://localhost:3000>, and sign in as **Alice**
+(`alice` / `alice-potato`). No agent creation is needed — seven ready,
+Alice-owned Agents are pre-seeded on first start:
 
-| Agent | Description | Instructions |
-| --- | --- | --- |
-| Lead | Dynamic facilitator and final synthesizer | Read the latest shared transcript, choose the most relevant next specialist, and finish only when the objective is satisfied. |
-| Builder | Implementation specialist | Build on existing shared work, verify requested artifacts, and report exact results. |
-| Reviewer | Quality and risk specialist | Respond to earlier contributions, challenge assumptions, run relevant checks, and recommend fixes. |
+| Agent | Role for the demos |
+| --- | --- |
+| Trip Coordinator | Lead — plans travel, delegates, synthesises the itinerary |
+| Flight & Hotel Scout | relevant — flights, hotels, neighbourhoods |
+| Budget Analyst | relevant — line-item costs vs. budget |
+| Weather Forecaster | relevant — seasonal climate and packing |
+| Database Administrator | irrelevant on purpose (SQL tuning) |
+| Frontend Engineer | irrelevant on purpose (React UI) |
+| Legal Counsel | irrelevant on purpose (contracts) |
+
+The three irrelevant Agents exist so you can show the Lead choosing only the
+Agents an objective needs. Every Agent has a real description, so the Lead can
+judge relevance. Create your own extra Agents any time via **Create agent**.
 
 ## Three-minute happy path
 
@@ -17,14 +27,15 @@ Run `npm run poc`, open <http://localhost:3000>, and create three ready Agents:
 2. Enter this objective:
 
    ```text
-   Build a small dependency-free web page in the shared workspace that explains
-   three benefits of multi-agent coordination. Include an accessible heading,
-   three benefit cards, and a README. Verify the files and review the result.
+   Plan a 5-day trip to Tokyo in April for two people on a US$3000 budget.
+   Recommend when in April to go, which neighbourhood to stay in, and a rough
+   day-by-day itinerary that stays within budget.
    ```
 
-3. Choose **Lead** as Lead. Leave **Who picks the specialists? → "I choose"** and select
-   **Builder** and **Reviewer**. (Switch it to **"The Lead chooses"** to let the Lead
-   pick its own roster from every ready Agent — see the note below.) Start.
+3. Choose **Trip Coordinator** as Lead. Leave **Who picks the specialists? →
+   "You pick them"** and select **Flight & Hotel Scout**, **Budget Analyst**, and
+   **Weather Forecaster**. (Switch it to **"The Lead chooses"** to let the Lead
+   pick its own roster from all seven ready Agents — see the note below.) Start.
 4. Show the server-owned workflow in motion: the active Agent, exact assignment,
    elapsed time, conversation-round count, and total turn count. On its **first turn**
    the Lead commits a coordination mode — `facilitated` (it picks the next Agent each
@@ -86,18 +97,9 @@ specialist can remain unused, and the Lead combines both viewpoints in the final
 
 ### Lead picks only the relevant Agents ("The Lead chooses" mode)
 
-Create a Lead plus six Agents **with real descriptions** — three that fit the objective
-and three that clearly do not:
-
-| Agent | Description |
-| --- | --- |
-| Trip Coordinator | Lead — plans travel and synthesises the itinerary |
-| Flight & Hotel Scout | Finds flights, hotels, and neighbourhoods |
-| Budget Analyst | Tracks and reconciles spend against a budget |
-| Weather Forecaster | Seasonal climate and packing advice |
-| Database Administrator | Tunes SQL queries and manages backups |
-| Frontend Engineer | Builds React user interfaces |
-| Legal Counsel | Reviews contracts and compliance |
+Uses the seven pre-seeded Agents from **Demo setup** — three fit a travel objective
+(Flight & Hotel Scout, Budget Analyst, Weather Forecaster) and three clearly do not
+(Database Administrator, Frontend Engineer, Legal Counsel).
 
 Pick **Trip Coordinator** as Lead, set **Who picks the specialists? → "The Lead
 chooses"**, and submit:

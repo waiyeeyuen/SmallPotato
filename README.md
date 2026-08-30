@@ -123,12 +123,13 @@ Sign in with one of the seeded, fictional demo accounts:
 
 These published credentials are controlled fixtures, not production accounts.
 
-In the Web UI:
+Signing in as **Alice** gives you seven ready, pre-seeded demo Agents (a Trip
+Coordinator plus six specialists) so both demos work with no setup. To add your
+own:
 
 1. Select **Create agent**.
 2. Enter a name, description, and workspace instructions.
-3. Select **Create agent** again.
-4. Enter a task in the Playground, for example:
+3. Enter a task in the Playground, for example:
 
    ```text
    Create a TypeScript hello-world CLI, add a test, and run it.
@@ -139,8 +140,9 @@ later messages.
 
 ### Team Tasks
 
-Create at least two Agents, then select **Team tasks** in the sidebar. Choose one
-Lead, one or more specialists, and describe a shared objective. The selected specialists
+Select **Team tasks** in the sidebar (the pre-seeded Agents are ready to use, or
+create your own). Choose one Lead, one or more specialists, and describe a shared
+objective. The selected specialists
 form an authorized pool rather than a fixed sequence. After each contribution, the Lead
 receives the updated actor-labelled transcript and dynamically selects the specialist
 best suited to build on, refine, verify, or challenge the conversation. Specialists also
@@ -150,8 +152,8 @@ and final Lead synthesis remain visible and persisted.
 Active tasks can be stopped. Tasks paused by a restart or Lead failure can be resumed,
 and a completed task can be followed immediately by a fresh task without a refresh.
 
-For a simple workplace demo, create Agents named Lead, Builder, and Reviewer, then
-ask them to plan, build, test, and review a small deliverable.
+For a quick demo, pick **Trip Coordinator** as Lead with the three travel
+specialists, and ask it to plan a short trip within a budget.
 
 See the [coordination architecture](docs/COORDINATION_ARCHITECTURE.md) and
 [judge demo runbook](docs/COORDINATION_DEMO.md) for the exact end-to-end flow.

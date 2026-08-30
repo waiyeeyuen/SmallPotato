@@ -18,6 +18,68 @@ import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
 
+/**
+ * Pre-seeded Agents (for every demo user) so `npm run poc` gives judges a
+ * working Team Tasks demo with zero manual setup. Three are relevant to the
+ * travel-planning objective and three are deliberately irrelevant, to demo the
+ * Lead choosing only the Agents it needs. Seeded once per user, deduped by name.
+ */
+const DEMO_AGENTS: ReadonlyArray<{
+  name: string;
+  description: string;
+  instructions: string;
+}> = [
+  {
+    name: "Trip Coordinator",
+    description:
+      "Lead travel planner. Breaks a trip goal into research tasks, delegates to the right specialists, and synthesises their input into one itinerary that respects the budget.",
+    instructions:
+      "Read the objective, choose only the specialists whose role it needs, and give each a specific research task. After each contribution, decide the next step. Finish with a day-by-day itinerary, a neighbourhood recommendation, timing advice, and a budget total.",
+  },
+  {
+    name: "Flight & Hotel Scout",
+    description:
+      "Finds flights, hotels, and neighbourhoods. Compares routes, fares, and areas to stay by price, location, and convenience.",
+    instructions:
+      "Given a destination, dates, party size, and budget, recommend a flight option, a neighbourhood, and one or two concrete lodging options with nightly prices. Respond to the Coordinator's task; do not plan the whole trip.",
+  },
+  {
+    name: "Budget Analyst",
+    description:
+      "Tracks and reconciles spend against a fixed budget. Breaks a plan into line items and flags when it goes over.",
+    instructions:
+      "Take the proposed flights, lodging, and activities, produce a line-item cost estimate for the whole party, and state whether it fits the stated budget with the remaining margin. Suggest the cheapest change if it is over.",
+  },
+  {
+    name: "Weather Forecaster",
+    description:
+      "Seasonal climate and packing advice for a destination and time of year. Advises on the best window within a month and what to pack.",
+    instructions:
+      "Given a destination and month, describe typical conditions, recommend the best week or dates to travel, note any seasonal events or risks, and give a short packing list. Do not book anything.",
+  },
+  {
+    name: "Database Administrator",
+    description:
+      "Tunes SQL queries, designs schemas and indexes, and manages backups and replication for production databases.",
+    instructions:
+      "Diagnose slow queries, propose indexes or schema changes, and describe a backup and restore plan. Ask for the schema and query plan if they are not provided.",
+  },
+  {
+    name: "Frontend Engineer",
+    description:
+      "Builds React user interfaces: components, state management, styling, and accessibility.",
+    instructions:
+      "Given a UI requirement, implement or describe the React components, state, and styling needed, and note accessibility considerations. Ask for the design or acceptance criteria if missing.",
+  },
+  {
+    name: "Legal Counsel",
+    description:
+      "Reviews contracts, terms of service, and regulatory compliance. Identifies risky clauses and obligations.",
+    instructions:
+      "Given a contract or policy, summarise the key obligations, flag risky or unusual clauses, and recommend edits. Do not give advice outside the document provided.",
+  },
+];
+
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
@@ -45,6 +107,62 @@ export class AgentService {
         if (agent.status === "busy" && !agent.activeTeamTaskId) {
           agent.status = "ready";
           agent.updatedAt = now();
+        }
+      }
+    });
+    if (this.config.nodeEnv !== "test") {
+      await this.seedDemoAgents();
+    }
+  }
+
+  private async seedDemoAgents(): Promise<void> {
+    // Drop earlier demo seeds that used non-UUID ids (rejected by uuid route params).
+    if (this.store.snapshot().agents.some((agent) => agent.id.startsWith("agent-demo-"))) {
+      await this.store.mutate((database) => {
+        database.agents = database.agents.filter((agent) => !agent.id.startsWith("agent-demo-"));
+      });
+    }
+
+    const owners = ["user-alice", "user-bob"];
+    const snapshot = this.store.snapshot();
+    const timestamp = now();
+    const created: Agent[] = [];
+    for (const ownerUserId of owners) {
+      for (const def of DEMO_AGENTS) {
+        const already =
+          snapshot.agents.some((a) => a.ownerUserId === ownerUserId && a.name === def.name) ||
+          created.some((a) => a.ownerUserId === ownerUserId && a.name === def.name);
+        if (already) continue;
+        const id = randomUUID();
+        const agent: Agent = {
+          id,
+          ownerUserId,
+          principalId: randomUUID(),
+          name: def.name,
+          description: def.description,
+          instructions: def.instructions,
+          status: "ready",
+          workspacePath: this.workspaces.workspacePath(id),
+          codexThreadId: null,
+          activeTeamTaskId: null,
+          lastError: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        try {
+          await this.workspaces.create(agent);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          await this.workspaces.writeInstructions(agent);
+        }
+        created.push(agent);
+      }
+    }
+    if (created.length === 0) return;
+    await this.store.mutate((database) => {
+      for (const agent of created) {
+        if (!database.agents.some((item) => item.id === agent.id)) {
+          database.agents.push(agent);
         }
       }
     });

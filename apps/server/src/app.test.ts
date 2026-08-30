@@ -22,8 +22,10 @@ describe("HTTP boundary", () => {
   it("exposes validated Team Task creation and detail routes", async () => {
     const task = { id: "00000000-0000-4000-8000-000000000001", objective: "Ship a feature" };
     const createArgs: unknown[] = [];
+    const createActors: unknown[] = [];
     const teamTasks = {
-      createTask: async (input: unknown) => {
+      createTask: async (actor: unknown, input: unknown) => {
+        createActors.push(actor);
         createArgs.push(input);
         return task;
       },
@@ -78,6 +80,8 @@ describe("HTTP boundary", () => {
     });
     expect(created.statusCode).toBe(202);
     expect(createArgs.at(-1)).toMatchObject({ agentSelection: "lead", specialistAgentIds: [] });
+    // Ownership of a Team Task comes from the server session, never the payload.
+    expect(createActors.at(-1)).toMatchObject({ userId: expect.any(String) });
     const detail = await app.inject({ method: "GET", url: "/api/team-tasks/" + task.id });
     expect(detail.statusCode).toBe(200);
     expect(detail.json()).toMatchObject({

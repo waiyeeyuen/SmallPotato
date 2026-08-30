@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { MarkdownContent } from "./MarkdownContent";
-import type { Agent, TeamAgentSelection, TeamTask, TeamTaskEvent } from "./types";
+import type { Agent, ResourceSummary, TeamAgentSelection, TeamTask, TeamTaskEvent } from "./types";
 
 interface Props {
   agents: Agent[];
+  resources: ResourceSummary[];
   onAgentsChanged: () => Promise<void>;
   onCreateAgent: () => void;
   onError: (message: string) => void;
@@ -29,6 +30,7 @@ const EVENT_LABEL: Record<string, string> = {
   specialist_result: "Member replied",
   turn_retry: "Retried a turn",
   turn_failed: "Turn failed",
+  resource_authorization: "Access decision",
   task_paused: "Paused",
   task_resumed: "Resumed",
   task_completed: "Task finished",
@@ -71,7 +73,7 @@ function modeText(task: TeamTask): string {
   return "The Lead is still setting up";
 }
 
-export function TeamTaskView({ agents, onAgentsChanged, onCreateAgent, onError }: Props) {
+export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent, onError }: Props) {
   const [tasks, setTasks] = useState<TeamTask[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [task, setTask] = useState<TeamTask | null>(null);
@@ -81,6 +83,7 @@ export function TeamTaskView({ agents, onAgentsChanged, onCreateAgent, onError }
   const [leadId, setLeadId] = useState("");
   const [agentSelection, setAgentSelection] = useState<TeamAgentSelection>("user");
   const [specialistIds, setSpecialistIds] = useState<string[]>([]);
+  const [resourceId, setResourceId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [, setClock] = useState(0);
   const objectiveRef = useRef<HTMLTextAreaElement>(null);
@@ -191,9 +194,11 @@ export function TeamTaskView({ agents, onAgentsChanged, onCreateAgent, onError }
         leadAgentId: leadId,
         specialistAgentIds: leadPicksAgents ? [] : specialistIds,
         agentSelection,
+        ...(resourceId ? { resourceId } : {}),
       });
       setObjective("");
       setSpecialistIds([]);
+      setResourceId("");
       setSelectedId(result.task.id);
       setTask(result.task);
       setEvents([]);
@@ -360,6 +365,23 @@ export function TeamTaskView({ agents, onAgentsChanged, onCreateAgent, onError }
                       </span>
                     </label>
                   </fieldset>
+                  <label>
+                    Protected document (optional)
+                    <select value={resourceId} onChange={(event) => setResourceId(event.target.value)}>
+                      <option value="">No protected document</option>
+                      {resources.map((resource) => (
+                        <option key={resource.id} value={resource.id}>
+                          {resource.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {resourceId && (
+                    <p className="team-hint">
+                      Each member is checked against its own capability lease before its turn runs.
+                      Without one the task pauses and nothing is mounted.
+                    </p>
+                  )}
                   {leadPicksAgents ? (
                     <p className="team-hint">
                       The Lead will decide which agents to involve and how they work together on its
@@ -486,8 +508,17 @@ export function TeamTaskView({ agents, onAgentsChanged, onCreateAgent, onError }
                         .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
                         .join(", ")
                     : "";
+                  const decision =
+                    item.type === "resource_authorization"
+                      ? item.content.startsWith("DENY")
+                        ? "deny"
+                        : "allow"
+                      : null;
                   return (
-                    <details className="team-log" key={item.id}>
+                    <details
+                      className={decision ? `team-log team-log-${decision}` : "team-log"}
+                      key={item.id}
+                    >
                       <summary>
                         <strong>{label}</strong>
                         <span>{actor}</span>

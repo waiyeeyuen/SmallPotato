@@ -23,7 +23,7 @@ files never enter the Runtime.
 The submission includes:
 
 - [One-page architecture and trust-boundary diagram](docs/POTATOGUARD_ARCHITECTURE.md)
-- [Three-minute live demo script](docs/DEMO.md)
+- [Three-minute live demo script](docs/UNIFIED_DEMO.md)
 - [Exact happy-path and edge-case judge runbook](docs/JUDGE_RUNBOOK.md)
 - Automated authentication, ownership, authorization, revocation, and Runtime
   mount tests
@@ -156,7 +156,7 @@ For a quick demo, pick **Trip Coordinator** as Lead with the three travel
 specialists, and ask it to plan a short trip within a budget.
 
 See the [coordination architecture](docs/COORDINATION_ARCHITECTURE.md) and
-[judge demo runbook](docs/COORDINATION_DEMO.md) for the exact end-to-end flow.
+[judge runbook](docs/JUDGE_RUNBOOK.md) for the exact end-to-end flow.
 
 ### 5. Stop and resume
 
@@ -303,7 +303,7 @@ docker compose config
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Multi-Agent coordination architecture](docs/COORDINATION_ARCHITECTURE.md)
-- [Judge demo and test runbook](docs/COORDINATION_DEMO.md)
+- [Three-minute demo script](docs/UNIFIED_DEMO.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)

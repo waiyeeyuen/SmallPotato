@@ -33,7 +33,7 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-async function makeServices(runner: AgentRunner) {
+async function makeServices(runner: AgentRunner, extraEnv: Record<string, string> = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-team-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -43,6 +43,7 @@ async function makeServices(runner: AgentRunner) {
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    ...extraEnv,
   });
   const store = new JsonStore(path.join(root, "data", "db.json"));
   const workspaces = new WorkspaceManager(path.join(root, "workspaces"));
@@ -50,9 +51,9 @@ async function makeServices(runner: AgentRunner) {
   const agents = new AgentService(config, store, workspaces, runner, security);
   await agents.initialize();
   await security.initialize();
-  const teamTasks = new TeamTaskService(config, store, workspaces, runner);
+  const teamTasks = new TeamTaskService(config, store, workspaces, runner, security);
   await teamTasks.initialize();
-  return { agents, teamTasks, config, store, workspaces };
+  return { agents, teamTasks, config, store, workspaces, security };
 }
 
 const delegate = (agentId: string, assignment: string, statePatch = {}) => JSON.stringify({
@@ -120,13 +121,13 @@ describe("TeamTaskService", () => {
       cancel: async () => { rejectRun?.(new Error("cancelled")); return true; },
       isAvailable: async () => true,
     };
-    const { agents, teamTasks, config, store, workspaces } = await makeServices(runner);
+    const { agents, teamTasks, config, store, workspaces, security } = await makeServices(runner);
     const lead = await agents.createAgent(actor, { name: "Lead" });
     const specialist = await agents.createAgent(actor, { name: "Specialist" });
-    const task = await teamTasks.createTask({ objective: "Survive a restart", leadAgentId: lead.id, specialistAgentIds: [specialist.id] });
+    const task = await teamTasks.createTask(actor, { objective: "Survive a restart", leadAgentId: lead.id, specialistAgentIds: [specialist.id] });
     await expect.poll(() => requests.length).toBe(1);
 
-    const recovered = new TeamTaskService(config, store, workspaces, runner);
+    const recovered = new TeamTaskService(config, store, workspaces, runner, security);
     await recovered.initialize();
     expect(recovered.getTask(task.id)).toMatchObject({ status: "paused", currentAgentId: null });
     expect(agents.getAgent(actor, lead.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
@@ -148,7 +149,7 @@ describe("TeamTaskService", () => {
     const { agents, teamTasks } = await makeServices(runner);
     const lead = await agents.createAgent(actor, { name: "Lead" });
     const specialist = await agents.createAgent(actor, { name: "Specialist" });
-    const task = await teamTasks.createTask({ objective: "Wait for work", leadAgentId: lead.id, specialistAgentIds: [specialist.id] });
+    const task = await teamTasks.createTask(actor, { objective: "Wait for work", leadAgentId: lead.id, specialistAgentIds: [specialist.id] });
     await expect.poll(() => requests.length).toBe(1);
     expect(agents.getAgent(actor, lead.id)).toMatchObject({ status: "busy", activeTeamTaskId: task.id });
     await expect(agents.sendMessage(actor, specialist.id, "conflicting work")).rejects.toMatchObject({ statusCode: 409 });
@@ -172,7 +173,7 @@ describe("TeamTaskService", () => {
       complete("Artifact built, tested, and reviewed."),
     );
 
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Create and review a small artifact",
       leadAgentId: lead.id,
       specialistAgentIds: [builder.id, reviewer.id],
@@ -214,7 +215,7 @@ describe("TeamTaskService", () => {
       complete("Wear red for a bold social setting; otherwise choose black for adaptable confidence."),
     );
 
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Discuss and come up with a reason why I should wear red or black today",
       leadAgentId: lead.id,
       specialistAgentIds: [engineer.id, stylist.id, critic.id],
@@ -250,7 +251,7 @@ describe("TeamTaskService", () => {
       specialist("First result"),
       complete("First task complete"),
     );
-    const first = await teamTasks.createTask({
+    const first = await teamTasks.createTask(actor, {
       objective: "First objective",
       leadAgentId: lead.id,
       specialistAgentIds: [specialistAgent.id],
@@ -262,7 +263,7 @@ describe("TeamTaskService", () => {
       specialist("Second result"),
       complete("Second task complete"),
     );
-    const second = await teamTasks.createTask({
+    const second = await teamTasks.createTask(actor, {
       objective: "Second objective",
       leadAgentId: lead.id,
       specialistAgentIds: [specialistAgent.id],
@@ -285,7 +286,7 @@ describe("TeamTaskService", () => {
       specialist("Recovered contribution."),
       complete("Completed after reviewing and recovering from the specialist failure."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Handle a failed contribution",
       leadAgentId: lead.id,
       specialistAgentIds: [specialistAgent.id],
@@ -317,7 +318,7 @@ describe("TeamTaskService", () => {
       complete("Finished after two distinct specialists collaborated successfully."),
     );
 
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Use both specialists even if one fails",
       leadAgentId: lead.id,
       specialistAgentIds: [first.id, second.id],
@@ -337,7 +338,7 @@ describe("TeamTaskService", () => {
 
   it("continues dynamic selection after a restart and resume", async () => {
     const runner = new ScriptedRunner();
-    const { agents, teamTasks, config, store, workspaces } = await makeServices(runner);
+    const { agents, teamTasks, config, store, workspaces, security } = await makeServices(runner);
     const lead = await agents.createAgent(actor, { name: "Lead" });
     const first = await agents.createAgent(actor, { name: "First" });
     const second = await agents.createAgent(actor, { name: "Second" });
@@ -349,14 +350,14 @@ describe("TeamTaskService", () => {
       interruptedLead,
     );
 
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Continue in order after restart",
       leadAgentId: lead.id,
       specialistAgentIds: [first.id, second.id],
     });
     await expect.poll(() => runner.requests.length).toBe(3);
 
-    const recovered = new TeamTaskService(config, store, workspaces, runner);
+    const recovered = new TeamTaskService(config, store, workspaces, runner, security);
     await recovered.initialize();
     expect(recovered.getTask(task.id).status).toBe("paused");
     releaseInterruptedLead(delegate(second.id, "Discarded interrupted assignment"));
@@ -396,7 +397,7 @@ describe("TeamTaskService", () => {
       runner.script.push(specialist(String(number), "Returned countdown value " + number + "."));
     }
     runner.script.push(complete("Countdown finished at 1."));
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Count down from 10 to 1, one number per turn",
       leadAgentId: lead.id,
       specialistAgentIds: [counterA.id, counterB.id, counterC.id],
@@ -465,7 +466,7 @@ describe("TeamTaskService", () => {
       runner.script.push(specialist(String(number), "Value " + number));
     }
     runner.script.push(complete("Reached 15."));
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Count down from 20 to 15",
       leadAgentId: lead.id,
       specialistAgentIds: [first.id, second.id],
@@ -499,7 +500,7 @@ describe("TeamTaskService", () => {
       specialist("1", "Returned 1."),
       complete("Countdown recovered and finished at 1."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Count down from 4 to 1",
       leadAgentId: lead.id,
       specialistAgentIds: [counterA.id, counterB.id],
@@ -533,7 +534,7 @@ describe("TeamTaskService", () => {
       specialist("Venue $600 + catering $1100 = $1700, within budget.", "Reconciled quotes."),
       complete("Booked the community hall with a $1700 buffet plan, $300 under budget."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Plan a 40-person team offsite within a $2000 budget",
       leadAgentId: lead.id,
       specialistAgentIds: [venue.id, catering.id, budget.id],
@@ -559,7 +560,7 @@ describe("TeamTaskService", () => {
       specialist("Done."),
       complete("Complete."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Produce a verifiable trail",
       leadAgentId: lead.id,
       specialistAgentIds: [specialistAgent.id],
@@ -587,7 +588,7 @@ describe("TeamTaskService", () => {
       planFacilitated(outsider.id, "Attempt unauthorized work again"),
     );
 
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Use only the authorized specialist pool",
       leadAgentId: lead.id,
       specialistAgentIds: [selected.id],
@@ -619,7 +620,7 @@ describe("TeamTaskService", () => {
       delegate(second.id, "Continue unnecessarily again"),
     );
 
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Reach a decision without looping forever",
       leadAgentId: lead.id,
       specialistAgentIds: [first.id, second.id],
@@ -654,7 +655,7 @@ describe("TeamTaskService", () => {
       specialist("1", "Returned 1."),
       complete("Counted down to 1."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Count down from 3 to 1",
       leadAgentId: lead.id,
       specialistAgentIds: [counterA.id, counterB.id],
@@ -684,7 +685,7 @@ describe("TeamTaskService", () => {
       specialist("Second part done."),
       complete("Both relevant specialists contributed."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Do a two-part job with only the relevant Agents",
       leadAgentId: lead.id,
       specialistAgentIds: [],
@@ -717,7 +718,7 @@ describe("TeamTaskService", () => {
       specialist("Bravo done."),
       complete("Finished with the two named Agents."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Use Agents referred to by name",
       leadAgentId: lead.id,
       specialistAgentIds: [],
@@ -749,7 +750,7 @@ describe("TeamTaskService", () => {
       specialist("1", "Returned 1."),
       complete("Counted down to 1."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Count down from 2 to 1",
       leadAgentId: lead.id,
       specialistAgentIds: [a.id, b.id],
@@ -776,7 +777,7 @@ describe("TeamTaskService", () => {
       specialist("1", "Done."),
       complete("Counted down to 1."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Count down from 3 to 1",
       leadAgentId: lead.id,
       specialistAgentIds: [research.id, check.id],
@@ -799,7 +800,7 @@ describe("TeamTaskService", () => {
       decision: { type: "delegate", agentId: a.id, assignment: "go" },
     });
     runner.script.push(noPlan, noPlan);
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Malformed first turn",
       leadAgentId: lead.id,
       specialistAgentIds: [a.id, b.id],
@@ -824,7 +825,7 @@ describe("TeamTaskService", () => {
       specialist("Bravo done."),
       complete("Done with Alpha and Bravo."),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Ignore a bad roster entry",
       leadAgentId: lead.id,
       specialistAgentIds: [],
@@ -845,7 +846,7 @@ describe("TeamTaskService", () => {
       planFacilitated("A", "work", { rosterAgentIds: ["A", "Ghost Agent"] }),
       planFacilitated("A", "work again", { rosterAgentIds: ["A", "Ghost Agent"] }),
     );
-    const task = await teamTasks.createTask({
+    const task = await teamTasks.createTask(actor, {
       objective: "Only one valid roster Agent",
       leadAgentId: lead.id,
       specialistAgentIds: [],
@@ -854,5 +855,73 @@ describe("TeamTaskService", () => {
     await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
     expect(teamTasks.getTask(task.id).lastError).toContain("at least 2 of these exact Agents");
     expect(agents.getAgent(actor, b.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
+  });
+
+  it("pauses the whole workflow when a specialist turn is denied the task's protected resource", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+    const resource = await security.createResource(actor, {
+      name: "Launch Plan",
+      description: "Protected launch checklist",
+      content: "Priority one: ship the Runtime boundary.",
+    });
+    runner.script.push(planFacilitated(analyst.id, "Read the protected brief and summarize its priorities"));
+
+    const task = await teamTasks.createTask(actor, {
+      objective: "Summarize the protected brief",
+      leadAgentId: lead.id,
+      specialistAgentIds: [analyst.id],
+      resourceId: resource.id,
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
+
+    expect(teamTasks.getTask(task.id).lastError).toContain("GRANT_MISSING");
+    // The Lead coordinated, but the denied specialist turn never reached the Runtime.
+    expect(runner.requests.map((request) => request.agentId)).toEqual([lead.id]);
+    const denial = teamTasks.getEvents(task.id).find((event) => event.type === "resource_authorization");
+    expect(denial?.content).toContain("DENY");
+    expect(denial?.agentId).toBe(analyst.id);
+    // Delegation authority and data authority land in the same tamper-evident log.
+    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+    expect(agents.getAgent(actor, analyst.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
+  });
+
+  it("mounts the protected resource read-only for an authorized specialist turn only", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+    const resource = await security.createResource(actor, {
+      name: "Launch Plan",
+      description: "Protected launch checklist",
+      content: "Priority one: ship the Runtime boundary.",
+    });
+    await security.createGrant(actor, agents.getAgent(actor, analyst.id), resource.id, "Summarize for the team", 300);
+    runner.script.push(
+      planFacilitated(analyst.id, "Read the protected brief and summarize its priorities"),
+      specialist("Priority one is the Runtime boundary.", "Read the brief and summarized it."),
+      complete("The brief prioritises the Runtime boundary."),
+    );
+
+    const task = await teamTasks.createTask(actor, {
+      objective: "Summarize the protected brief",
+      leadAgentId: lead.id,
+      specialistAgentIds: [analyst.id],
+      resourceId: resource.id,
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+
+    const specialistRequest = runner.requests.find((request) => request.agentId === analyst.id);
+    expect(specialistRequest?.mounts).toEqual([
+      { sourcePath: expect.any(String), targetPath: "/authorized-resources/" + resource.id + ".txt", readOnly: true },
+    ]);
+    expect(specialistRequest?.prompt).toContain("/authorized-resources/" + resource.id + ".txt");
+    // The Lead coordinates without the document, so delegation cannot widen access.
+    expect(runner.requests.filter((request) => request.agentId === lead.id).every((request) => request.mounts === undefined)).toBe(true);
+    const allow = teamTasks.getEvents(task.id).find((event) => event.type === "resource_authorization");
+    expect(allow?.content).toContain("ALLOW");
+    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
   });
 });

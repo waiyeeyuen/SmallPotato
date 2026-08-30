@@ -581,6 +581,7 @@ export default function App() {
         {view === "team" ? (
           <TeamTaskView
             agents={agents}
+            resources={ownedResources}
             onAgentsChanged={refreshAgents}
             onCreateAgent={() => {
               setForm(emptyAgent);

@@ -27,6 +27,8 @@ function normalizeDatabase(database: Database): Database {
     })),
     teamTasks: (database.teamTasks ?? []).map((task) => ({
       ...task,
+      ownerUserId: task.ownerUserId ?? "user-alice",
+      resourceId: task.resourceId ?? null,
       agentSelection: task.agentSelection ?? "user",
       turnPolicy: task.turnPolicy ?? null,
       assignmentQueue: task.assignmentQueue ?? [],

@@ -17,7 +17,7 @@ const runner = createRunner(config);
 const security = new SecurityService(store, config.dataDirectory);
 const service = new AgentService(config, store, workspaces, runner, security);
 await service.initialize();
-const teamTasks = new TeamTaskService(config, store, workspaces, runner);
+const teamTasks = new TeamTaskService(config, store, workspaces, runner, security);
 await teamTasks.initialize();
 await security.initialize();
 

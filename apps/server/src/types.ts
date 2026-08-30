@@ -27,6 +27,7 @@ export type TeamTaskEventType =
   | "specialist_result"
   | "turn_retry"
   | "turn_failed"
+  | "resource_authorization"
   | "task_paused"
   | "task_resumed"
   | "task_completed"
@@ -89,8 +90,16 @@ export interface AgentRun {
 
 export interface TeamTask {
   id: string;
+  /** The human who started the task; the actor every turn is authorized as. */
+  ownerUserId: string;
   objective: string;
   leadAgentId: string;
+  /**
+   * Optional protected resource the specialists need. Every specialist turn is
+   * authorized against it independently, so a Lead's delegation can never widen
+   * data access beyond what a lease already allows.
+   */
+  resourceId: string | null;
   /**
    * When agentSelection is "user" this is the fixed specialist pool. When it is
    * "lead" this starts as every reserved candidate Agent and is narrowed to the
@@ -247,6 +256,8 @@ export interface UpdateAgentInput {
 export interface CreateTeamTaskInput {
   objective: string;
   leadAgentId: string;
+  /** Protected resource the specialists may read, subject to a capability lease. */
+  resourceId?: string | undefined;
   /** Required when agentSelection is "user"; ignored when it is "lead". */
   specialistAgentIds: string[];
   agentSelection?: TeamAgentSelection | undefined;

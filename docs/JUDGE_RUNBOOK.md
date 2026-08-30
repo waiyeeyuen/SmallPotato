@@ -67,6 +67,100 @@ fictional content only.
    active leases; it disappears from selectors.
 4. Show: the lease is revoked and the resource is unavailable.
 
+## Team Task authorization
+
+A Team Task may name one protected resource. Every **specialist** turn is then
+authorized independently before the Runtime is touched; the Lead is never granted
+the document, so delegation cannot widen data access.
+
+| Step | You do | System does | Show judges |
+| --- | --- | --- | --- |
+| 1 | Create a protected resource the team needs, e.g. **Tokyo Trip Brief**. | Writes a server-owned `0600` file; returns metadata only. | The resource card; content is not displayed. |
+| 2 | Start a Team Task with a Lead, two specialists, and that document selected. | Reserves the roster and runs the Lead's first turn. | `coordination_plan`, then the first hand-off. |
+| 3 | Wait. | The first specialist turn is refused; the task **pauses**, every Agent returns to `ready`, and a `DENY` event is written. | Paused banner naming the Agent and `GRANT_MISSING`; the red **Access decision** row in the Activity log. |
+| 4 | Issue a read lease to **each** specialist for that resource. | Creates one lease per principal + read + resource + expiry. | Active state and countdown. |
+| 5 | Press **Resume**. | The Lead reviews the interruption and re-delegates; the authorized turn mounts the file read-only at `/authorized-resources/<id>.txt`. | Green **Access decision · ALLOW** row; the answer quotes the document. |
+| 6 | Open the Activity log and Audit receipts. | Verifies both hash chains. | `eventsVerified` true, **Hash chain verified**, and the decisions correlated to the turns that caused them. |
+
+Authorization is per **turn**, not per task: a task with several specialist turns
+produces one `ALLOW` receipt per turn, each against a live lease.
+
+### Team Task denial cases
+
+| Case | Action | Expected result |
+| --- | --- | --- |
+| No lease | Start a task on a resource with no lease issued. | First specialist turn refused, `GRANT_MISSING`, task paused, no container run. |
+| Partial leases | Lease only one of two specialists. | The task pauses again when the Lead reaches the un-leased Agent. |
+| Revoked mid-task | Revoke a lease while the task is running. | The next specialist turn is refused with `GRANT_REVOKED` and the task pauses. |
+| Resource deleted mid-task | Delete the protected resource while a task references it. | The next specialist turn is refused with `RESOURCE_NOT_FOUND` and the task pauses. |
+| No container Runtime | Set a non-container runtime provider. | The task pauses with a Runtime message; no policy decision is fabricated. |
+
+## Coordination reliability cases
+
+### Validation and reservation
+
+- Try to start with fewer than two ready Agents. The UI explains what is missing.
+- Try to submit without an objective or specialist. The start control stays disabled.
+- Start one Team Task, then attempt `POST /api/team-tasks` for another through
+  DevTools. The API returns HTTP 409; the first task is unchanged.
+- Send an unrecognized creation field such as `currentAgentId` through DevTools.
+  The API returns HTTP 400; workflow ownership cannot be injected by the browser.
+
+### Stop and recovery
+
+- While an Agent is working, choose **Stop task**. The Runtime turn is cancelled,
+  the queue is cleared, the event log records the stop, and all participants
+  return to `ready`.
+- Start a task, stop the server during a turn, then rerun `npm run poc`. The task
+  appears paused with the restart reason. Choose **Resume**; the Lead reviews the
+  interruption before coordination continues.
+- Give a Lead instructions to emit invalid output. The coordinator retries once,
+  then pauses with the error visible. Restore valid instructions and resume.
+- Give a specialist instructions to emit invalid output. The coordinator retries
+  once, records the failure, then returns the updated transcript to the Lead for a
+  dynamic recovery decision.
+
+### Consecutive tasks and stale state
+
+- Complete a task and immediately select **Start another task**. The form is
+  usable at once and auto-focuses the objective.
+- Start the second task. Task history contains both, only the second is running,
+  turn counts restart at zero, its queue begins empty, and no first-task thread or
+  shared state appears in the detail view.
+
+### Coordination modes
+
+On its **first turn** the Lead commits a mode, recorded as a `coordination_plan`
+event and locked for the rest of the task:
+
+- `facilitated` — the Lead picks the next Agent by ID every turn, and is rejected
+  if it names an Agent outside the authorized pool.
+- `sequential` — the platform rotates the roster deterministically
+  (`TeamTaskService.nextSequentialSpecialistId`). A sequence needs `2N+1` turns,
+  so the 30-turn safety cap bounds these runs at about 14 steps.
+
+To exercise `sequential`, give two or three specialists this objective:
+
+```text
+Count down from 10 to 1, one number per turn. Each specialist contribution provides
+exactly the next number, using the latest previous contribution to continue by one.
+Complete only after 1 is contributed.
+```
+
+To exercise the Lead choosing its own roster, set **Who picks the specialists? →
+"The Lead chooses"** with a mixed pool of relevant and irrelevant Agents. The
+whole ready pool is reserved at start, and the Agents the Lead leaves out are
+released back to `ready`. Agents with blank descriptions cannot be judged for
+relevance, so the Lead tends to keep everyone.
+
+### Startup behavior
+
+- With Launchpad already running, execute `npm run poc` in another terminal. It
+  exits successfully and points at the existing session instead of failing with
+  `EADDRINUSE`.
+- Occupy the configured port with another process. The script reports the conflict
+  before an expensive build and suggests `PORT=<another-port> npm run poc`.
+
 ## Browser-ID tampering proof
 
 While signed in as Alice, open browser developer tools and run:

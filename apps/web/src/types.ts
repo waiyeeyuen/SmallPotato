@@ -121,6 +121,7 @@ export interface TeamTask {
   id: string;
   objective: string;
   leadAgentId: string;
+  resourceId: string | null;
   specialistAgentIds: string[];
   agentSelection: TeamAgentSelection;
   turnPolicy: TeamTaskTurnPolicy | null;

@@ -747,6 +747,19 @@ input:focus, textarea:focus, select:focus { border-color: #8a78e8; box-shadow: 0
   background: color-mix(in srgb, var(--line) 12%, transparent);
   padding: var(--sp-2);
 }
+/* Authorization decisions carry the same allow/deny colour language as the
+   audit receipt view, so one glance separates them from ordinary turns. */
+.team-log-allow {
+  border-color: color-mix(in srgb, #277756 45%, var(--line));
+  background: color-mix(in srgb, #dcf2e9 55%, transparent);
+}
+.team-log-deny {
+  border-color: color-mix(in srgb, #a84c4c 45%, var(--line));
+  background: color-mix(in srgb, #f6dfdc 55%, transparent);
+}
+.team-log-allow > summary > strong { color: #277756; }
+.team-log-deny > summary > strong { color: #a84c4c; }
+
 .team-log > summary {
   display: flex;
   align-items: baseline;

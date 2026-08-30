@@ -87,6 +87,7 @@ export const api = {
     leadAgentId: string;
     specialistAgentIds: string[];
     agentSelection: TeamTask["agentSelection"];
+    resourceId?: string;
   }) =>
     request<{ task: TeamTask }>("/api/team-tasks", {
       method: "POST",

@@ -32,6 +32,7 @@ const createTeamTaskBody = z.object({
   leadAgentId: z.string().uuid(),
   specialistAgentIds: z.array(z.string().uuid()).max(20).default([]),
   agentSelection: z.enum(["user", "lead"]).optional(),
+  resourceId: z.string().trim().min(1).max(120).optional(),
 }).strict().refine(
   (value) => value.agentSelection === "lead" || value.specialistAgentIds.length >= 1,
   { message: "Select at least one specialist", path: ["specialistAgentIds"] },
@@ -260,7 +261,8 @@ export async function createApp(
 
     app.post("/api/team-tasks", async (request, reply) => {
       const body = createTeamTaskBody.parse(request.body);
-      return reply.code(202).send({ task: await teamTasks.createTask(body) });
+      const actor = await actorFor(request);
+      return reply.code(202).send({ task: await teamTasks.createTask(actor, body) });
     });
 
     app.get("/api/team-tasks/:id", async (request) => {

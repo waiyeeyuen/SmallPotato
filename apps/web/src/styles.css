@@ -1010,6 +1010,28 @@ input:focus, textarea:focus, select:focus { border-color: #8a78e8; box-shadow: 0
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+/* Conversation notes: handoffs and policy decisions read as quiet one-liners,
+   with allow/deny carrying the same colour language as the Activity log. */
+.team-note-allow .team-system-message {
+  background: color-mix(in srgb, #277756 12%, transparent);
+  color: #1f5d45;
+}
+.team-note-deny .team-system-message {
+  background: color-mix(in srgb, #a84c4c 12%, transparent);
+  color: #8c3b3b;
+}
+.team-note-detail {
+  display: block;
+  margin-top: 4px;
+  font-style: normal;
+  color: var(--muted);
+}
+.team-note-allow .team-note-detail,
+.team-note-deny .team-note-detail {
+  color: inherit;
+  opacity: .8;
+}
+
 .team-system-message > span:first-child {
   text-align: center;
   font-weight: 700;

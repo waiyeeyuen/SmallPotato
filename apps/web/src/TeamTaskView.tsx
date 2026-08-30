@@ -11,6 +11,11 @@ interface Props {
   onError: (message: string) => void;
 }
 
+/** One rendered line of the team conversation: an Agent turn, or a short note. */
+type ChatEntry =
+  | { kind: "agent"; id: string; name: string; role?: string; body: string; at: string }
+  | { kind: "note"; id: string; tone: "info" | "allow" | "deny"; body: string; detail?: string | null; at: string };
+
 const terminalStatuses = new Set<TeamTask["status"]>(["completed", "failed", "stopped"]);
 
 const STATUS_LABEL: Record<TeamTask["status"], string> = {
@@ -248,6 +253,76 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
     task?.status === "completed" && task.completionSummary
       ? { name: agentMap.get(task.leadAgentId)?.name ?? "Lead", body: task.completionSummary }
       : null;
+
+  /**
+   * The chat is built from the same event log the Activity panel shows, so
+   * whatever the team actually did is what a reader sees — no separate
+   * transcript that can drift.
+   *
+   * Every Agent turn becomes a bubble in both coordination modes. Handoffs and
+   * policy decisions become compact one-line notes, so the reason work stopped
+   * or resumed is visible in the conversation rather than buried in the log.
+   */
+  const conversation = useMemo<ChatEntry[]>(() => {
+    const entries: ChatEntry[] = [];
+    for (const item of events) {
+      const name = item.agentId ? agentMap.get(item.agentId)?.name ?? "Agent" : "System";
+      switch (item.type) {
+        case "coordination_plan":
+          entries.push({ kind: "note", id: item.id, tone: "info", at: item.createdAt, body: item.content });
+          break;
+        case "lead_decision":
+          if (item.content.trim()) {
+            entries.push({ kind: "agent", id: item.id, name, role: "Lead", at: item.createdAt, body: item.content });
+          }
+          break;
+        case "delegated":
+          entries.push({
+            kind: "note",
+            id: item.id,
+            tone: "info",
+            at: item.createdAt,
+            body: item.content,
+            detail: item.assignment,
+          });
+          break;
+        case "specialist_result":
+          entries.push({
+            kind: "agent",
+            id: item.id,
+            name,
+            at: item.createdAt,
+            body: item.chatContent ?? item.content,
+          });
+          break;
+        case "resource_authorization":
+          entries.push({
+            kind: "note",
+            id: item.id,
+            tone: item.content.startsWith("DENY") ? "deny" : "allow",
+            at: item.createdAt,
+            body: item.content,
+          });
+          break;
+        case "turn_retry":
+        case "turn_failed":
+        case "task_paused":
+        case "task_resumed":
+        case "task_stopped":
+          entries.push({
+            kind: "note",
+            id: item.id,
+            tone: item.type === "task_resumed" ? "info" : "deny",
+            at: item.createdAt,
+            body: item.content,
+          });
+          break;
+        default:
+          break;
+      }
+    }
+    return entries;
+  }, [events, agentMap]);
 
   return (
     <section className="team-view">
@@ -601,31 +676,40 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                   </div>
                 </article>
 
-                {/* Turn-by-turn tasks show every reply. One-answer tasks show only the final reply;
-                    the step-by-step work is in the Activity log. */}
-                {task.turnPolicy === "sequential" &&
-                  events.map((item) => {
-                    if (item.type !== "specialist_result" || !item.chatContent) return null;
-                    const name = item.agentId
-                      ? agentMap.get(item.agentId)?.name ?? "Unknown agent"
-                      : "Member";
-                    return (
-                      <article className="team-message" key={item.id}>
-                        <div className="team-avatar" aria-hidden="true">
-                          {initials(name)}
+                {/* Every Agent turn appears here in both coordination modes; handoffs
+                    and policy decisions appear as short notes so the reader can follow
+                    why the team did what it did. */}
+                {conversation.map((entry) =>
+                  entry.kind === "agent" ? (
+                    <article className="team-message" key={entry.id}>
+                      <div className="team-avatar" aria-hidden="true">
+                        {initials(entry.name)}
+                      </div>
+                      <div className="team-message-body">
+                        <div className="team-message-meta">
+                          <strong>{entry.name}</strong>
+                          {entry.role && <span>{entry.role}</span>}
+                          <time>{time(entry.at)}</time>
                         </div>
-                        <div className="team-message-body">
-                          <div className="team-message-meta">
-                            <strong>{name}</strong>
-                            <time>{time(item.createdAt)}</time>
-                          </div>
-                          <div className="team-bubble">
-                            <MarkdownContent>{item.chatContent}</MarkdownContent>
-                          </div>
+                        <div className="team-bubble">
+                          <MarkdownContent>{entry.body}</MarkdownContent>
                         </div>
-                      </article>
-                    );
-                  })}
+                      </div>
+                    </article>
+                  ) : (
+                    <div className={`team-system-entry team-note-${entry.tone}`} key={entry.id}>
+                      <div className="team-system-message">
+                        <span aria-hidden="true">
+                          {entry.tone === "deny" ? "!" : entry.tone === "allow" ? "\u2713" : "\u00b7"}
+                        </span>
+                        <span>
+                          {entry.body}
+                          {entry.detail && <em className="team-note-detail">{entry.detail}</em>}
+                        </span>
+                      </div>
+                    </div>
+                  ),
+                )}
 
                 {task.status === "running" && (
                   <div className="team-typing">
@@ -633,8 +717,8 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                     <span />
                     <span />
                     <small>
-                      {task.turnPolicy === "facilitated"
-                        ? "The team is working. The answer will appear here."
+                      {task.currentAgentId && agentMap.get(task.currentAgentId)
+                        ? `${workingName} is replying…`
                         : "The team is working…"}
                     </small>
                   </div>
@@ -658,19 +742,6 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                   </article>
                 )}
 
-                {(task.status === "failed" ||
-                  task.status === "stopped" ||
-                  task.status === "paused") && (
-                  <div className={`team-system-entry team-system-entry-${task.status}`}>
-                    <div className="team-system-message">
-                      <span aria-hidden="true">!</span>
-                      <span>
-                        {task.lastError ??
-                          `The task was ${STATUS_LABEL[task.status].toLowerCase()} before it finished.`}
-                      </span>
-                    </div>
-                  </div>
-                )}
                 <div ref={conversationEnd} />
               </div>
 

@@ -1,0 +1,69 @@
+graph TB
+    subgraph Human["🔐 Human/Browser Layer"]
+        User["User<br/>(Alice/Bob)"]
+        Browser["Browser<br/>(React Web UI)"]
+    end
+
+    subgraph TB1["Trust Boundary #1<br/>HTTP + Session Validation"]
+    end
+
+    subgraph ControlPlane["🛡️ Control Plane (Fastify)"]
+        Session["Session<br/>Validation"]
+        Identity["RequestActor<br/>(human identity<br/>from session)"]
+        Owner["Agent Ownership<br/>Check"]
+        Auth["ENFORCEMENT POINT<br/>authorizeResourceRead()<br/>Validates:<br/>• Agent ownership<br/>• Resource ownership<br/>• Grant state (active/expired/revoked)<br/>• Cross-user share validity"]
+    end
+
+    subgraph Storage["📦 Storage & State"]
+        Store["JSON Store<br/>(agents, users,<br/>leases, resources)"]
+        Protected["Protected Resources<br/>(read-only<br/>filesystem)"]
+        Audit["Audit Receipt Chain<br/>(hash-chained<br/>decisions)"]
+    end
+
+    subgraph TB2["Trust Boundary #2<br/>Pre-Runtime Authorization Gate"]
+    end
+
+    subgraph Runtime["🐳 Agent Runtime<br/>(Disposable Container)"]
+        Codex["Codex CLI<br/>(Agent execution)"]
+        Mount["Resource Mount<br/>(read-only)"]
+    end
+
+    subgraph Instrumentation["📊 INSTRUMENTATION<br/>Audit Trail"]
+        Receipt["PolicyDecision<br/>Receipt<br/>(human ID, agent principal,<br/>resource, decision,<br/>reason, timestamp)"]
+        Chain["Hash Chain<br/>Verification"]
+    end
+
+    subgraph Response["Response Path"]
+        Result["Agent Result<br/>+ Audit Receipt"]
+    end
+
+    User -->|Username/Password| Browser
+    Browser -->|HTTP Request| Session
+    Session -->|HttpOnly Session| Identity
+    Identity -->|Browser-supplied<br/>owner ID rejected| Owner
+    Owner -->|Is Agent<br/>owned by human?| Auth
+    
+    Auth -->|Check: Agent +<br/>Resource + Lease| Store
+    Auth -->|Read resource<br/>metadata| Store
+    Auth -->|Check grant<br/>state| Store
+    Auth -->|Check share<br/>state| Store
+    
+    Auth -->|DENY| TB2
+    TB2 -->|❌ No container<br/>No mount| Runtime
+    
+    Auth -->|ALLOW| TB2
+    TB2 -->|✓ Container<br/>read-only mount| Mount
+    Mount -->|Mounts only<br/>approved resource| Protected
+    
+    Codex -->|Execute with<br/>mounted resource| Result
+    
+    Auth -->|Create receipt<br/>with Run ID| Audit
+    Receipt -->|Hash chain<br/>integrity check| Chain
+    Chain -->|Export CSV| Response
+
+    style Auth fill:#ff9999
+    style TB1 fill:#ffffcc
+    style TB2 fill:#ffffcc
+    style Instrumentation fill:#99ccff
+    style Mount fill:#99ff99
+    style Receipt fill:#ff99ff

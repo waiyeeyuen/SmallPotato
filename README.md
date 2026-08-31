@@ -1,406 +1,332 @@
-# Volc Agent Launchpad
+# PotatoGuard
 
-A working multi-Agent coordination platform for middleware hackathons. It provides
-Agent CRUD, a browser Playground, persistent workspaces, and a deterministic Team
-Task coordinator backed by Codex CLI and the Volcengine Ark Responses API.
+**PotatoGuard is runtime authorization middleware for autonomous AI Agents.** It separates human identity from Agent identity, lets users delegate narrowly scoped and revocable access to protected resources, and enforces authorization before protected data enters the Agent Runtime.
 
-Run it locally with Docker, Colima, or rootless Podman, or deploy it to
-Volcengine ECS.
+> **The Agent can decide what it wants to do. PotatoGuard decides what it is allowed to access.**
 
-> [!WARNING]
-> This is a multi-user hackathon proof of concept, not a production identity
-> system. Alice and Bob are local fixtures backed by hashed passwords and
-> server sessions; use fictional data only. See [SECURITY.md](SECURITY.md).
+This repository is our **Track 1 / Bouncer** submission built on the Volc Agent Launchpad starter kit.
 
-## Track 1 submission: Bouncer
+## Why PotatoGuard?
 
-PotatoGuard is policy-governed multi-Agent middleware. It separates the human
-operating the platform from every Agent principal, checks both Agent ownership
-and protected-data authority on the server, and coordinates specialists through
-a persistent Lead-controlled workflow. A protected file enters a disposable
-Runtime only as an approved read-only mount. Denied files never enter it.
+Autonomous Agents create a control problem: an Agent may be misconfigured, manipulated by untrusted input, or simply make the wrong decision. Giving that Agent all of a human user's authority violates least privilege and makes the model itself part of the security boundary.
 
-The submission includes:
+PotatoGuard moves that boundary out of the model and into trusted middleware:
 
-- [One-page architecture and trust-boundary diagram](docs/POTATOGUARD_ARCHITECTURE.md)
-- [Three-minute live demo script](docs/UNIFIED_DEMO.md)
-- [Exact happy-path and edge-case judge runbook](docs/JUDGE_RUNBOOK.md)
-- Automated authentication, ownership, authorization, revocation, and Runtime
-  mount tests
+- the authenticated human and the Agent have separate identities;
+- protected-resource authority is delegated to a specific Agent principal, not inherited from the human;
+- access is scoped to a resource, action, context, expiry, and revocation state;
+- authorization is enforced server-side immediately before Runtime access;
+- denied requests stop before the protected file is mounted or the Agent Run begins; and
+- security decisions produce attributable, tamper-evident audit receipts.
 
-## Features
+The UI explains and visualizes these controls, but **the security decision is enforced in the backend/Runtime path, not in the browser**.
 
-- Username/password login with scrypt password hashes and HttpOnly sessions
-- Per-user Agent ownership and a separate principal for every Agent
-- Time-limited capability leases scoped to one Agent, action, and resource
-- One-click Team Task consent that issues separate task-bound capabilities to
-  the specialist roster and revokes them automatically when the team ends
-- Inline step-up approval that pauses before a protected specialist Runtime,
-  offers one-turn, one-Agent, or roster-wide task access, and continues without
-  sending the user to a separate lease screen
-- Protected-resource create, metadata/content replacement, and safe deletion
-- Cross-user resource sharing: the owner grants another user read access to a
-  chosen file (optional expiry, owner-only revoke); the grantee's Agents can then
-  read it, and an un-shared file is denied immediately before the Runtime starts
-- Backend policy enforcement before Agent execution
-- Read-only protected-file mounts in disposable local Runtime containers
-- Immediate revocation, automatic expiry, and deny-by-default behavior
-- Hash-chained allow/deny receipts with human and Agent attribution and CSV
-  export, plus an account-level "Sharing" view (share/revoke actions and reads
-  on your files by other users' Agents)
-- Browser-supplied human/owner IDs rejected at the HTTP boundary
-- React and TypeScript Web UI
-- Agent create, edit, start, stop, delete, and multi-turn chat
-- Per-user Team Task history and controls; another signed-in user cannot inspect,
-  stop, resume, or populate a task with foreign Agents
-- Team Tasks with transcript-aware dynamic specialist routing, shared versioned state, and a shared workspace
-- Live coordination progress, contextual handoffs, retry/failure evidence, stop/resume, and clean consecutive tasks
-- Fastify control plane with asynchronous Run state
-- Persistent Agent workspaces and Codex sessions
-- Disposable Docker, Colima, or Podman container for each local turn
-- Docker and Terraform deployment paths for Volcengine ECS
+## Submission Evidence
 
-## Requirements
+| Evaluation area | PotatoGuard evidence |
+| --- | --- |
+| **End-to-end middleware behavior (40%)** | React frontend → Fastify control plane → PotatoGuard authorization → protected-resource vault → read-only Runtime mount → real Codex/Ark Agent Run. DENY stops before Runtime creation/mount. |
+| **Technical design & integration (25%)** | Human/Agent identity separation, scoped capability leases, two explicit trust boundaries, deny-by-default policy, integration with the existing Agent and Team Task execution paths. |
+| **Verification & robustness (20%)** | Automated authentication, ownership, lease, revocation, expiry, cross-user isolation, Runtime-mount and audit-chain tests; strict request schemas; secret/header redaction; denial and cleanup paths. |
+| **Demo & reproducibility (15%)** | `npm run check`, one-command local startup with `npm run poc`, fictional seeded fixtures, a three-minute live demo, an extended judge runbook, documented limitations, and `.env.example`. |
 
-- Node.js 22+
-- npm 10+
-- Docker, Colima, or Podman
-- A Volcengine Ark API key and endpoint that supports the Responses API
+## Core Middleware Capabilities
 
-Codex CLI is included in the Runtime image and is not required on the host.
+### 1. Human / Agent Identity Separation
 
-## Local browser SOP
+- Demo users such as Alice and Bob authenticate against server-side identities backed by scrypt password hashes.
+- Each Agent receives its own **server-generated principal UUID (`principalId`)**, independent of the human who owns it.
+- Requests are attributed from the server session; browser-supplied owner/user identity fields are not trusted.
+- Foreign Agent/task lookups are owner-filtered and use `404` where appropriate to avoid ownership enumeration.
 
-### 1. Check the local tools
+**Implementation:** `apps/server/src/security-service.ts`, `apps/server/src/app.ts`, `apps/server/src/types.ts`
 
-Install Node.js 22+ and one supported container engine, then verify them:
+### 2. Scoped, Revocable Access Leases
 
-```bash
-node --version
-npm --version
-docker --version        # Docker Desktop, Docker Engine, or Colima
-podman --version        # Use this instead when running Podman
+Protected-resource authority is represented as a temporary capability scoped to the relevant Agent and operation rather than as standing human authority. Depending on the execution path, grants can also be bound to a Team Task context.
+
+Conceptually:
+
+```text
+Agent principal + action + resource + context + expiry + revocation state
 ```
 
-Only one container engine is required. Codex CLI is already included in the
-Runtime image.
+- grants can expire automatically;
+- owners can revoke access;
+- Team Task capabilities are issued only to the authorized specialist roster and are revoked when the team lifecycle ends; and
+- cross-user resource sharing uses explicit owner-controlled grants rather than implicit access.
 
-### 2. Clone the repository
+**Implementation:** `apps/server/src/security-service.ts`, `apps/server/src/types.ts`, `apps/server/src/team-task-service.ts`
 
-```bash
-git clone <repository-url> volc-agent-launchpad
-cd volc-agent-launchpad
+### 3. Pre-Runtime Authorization Enforcement
+
+Before a protected resource is exposed to an Agent turn, PotatoGuard evaluates the authenticated actor, Agent ownership, resource authority, grant state, expiry/revocation state, and execution context.
+
+```text
+Protected request
+      |
+      v
+PotatoGuard policy check
+   /              \
+DENY              ALLOW
+ |                  |
+no Run          approved file only
+no mount        mounted read-only
+ |                  |
+audit receipt     Agent Runtime
 ```
 
-Skip this step when already working from the repository root.
+**DENY** ends the protected request before the Agent Runtime receives the file. **ALLOW** permits only the approved server-controlled resource path to be mounted into the disposable Runtime.
 
-### 3. Start the product
+**Implementation:** `apps/server/src/security-service.ts`, `apps/server/src/app.ts`, `apps/server/src/container-codex-runner.ts`
 
-If `.env` already contains `ARK_API_KEY`, `ARK_MODEL`, and optionally
-`ARK_BASE_URL`, run:
+### 4. Cross-User Resource Isolation
 
-```bash
-npm run poc
+- A user does not gain protected-resource access merely by knowing another user's resource or Agent identifier.
+- Cross-user reads require an explicit active share/grant from the resource owner.
+- Missing, revoked, expired, wrong-context, foreign-Agent, foreign-resource, or deleted-resource requests are rejected before protected Runtime execution.
+
+**Implementation:** `apps/server/src/security-service.ts`, `apps/server/src/app.ts`
+
+### 5. Read-Only Protected Runtime Mounts
+
+On an authorized protected turn, the server mounts only the approved protected-resource path into the disposable local container as read-only. Ordinary Agent workspace access remains separate from the protected-resource vault.
+
+The host controls these mounts; PotatoGuard does **not** claim that the host itself is unable to access its own files. The security property demonstrated by this POC is that **protected vault files are not exposed to the Agent Runtime until the trusted server-side authorization gate returns ALLOW**.
+
+**Implementation:** `apps/server/src/container-codex-runner.ts`, `Dockerfile.runtime`
+
+### 6. Tamper-Evident Audit Receipts
+
+Authorization and resource-management actions generate receipts with human/Agent attribution. Receipts are linked by hash so modification of a stored receipt is detectable during chain verification.
+
+Audit evidence can include:
+
+- human identity;
+- Agent principal;
+- resource/action;
+- ALLOW or DENY decision and reason;
+- timestamp;
+- Run/task correlation where applicable; and
+- previous/current receipt hashes.
+
+The UI can verify the chain and export decision evidence as CSV without exporting protected document contents.
+
+**Implementation:** `apps/server/src/audit.ts`, `apps/server/src/security-service.ts`, `apps/server/src/store.ts`
+
+## Architecture and Trust Boundaries
+
+The required one-page architecture diagram is here:
+
+**[docs/POTATOGUARD_ARCHITECTURE.md](docs/POTATOGUARD_ARCHITECTURE.md)**
+
+The architecture highlights two primary trust boundaries:
+
+1. **Browser → Fastify control plane** — the browser supplies user intent, while authenticated identity and ownership are resolved server-side.
+2. **Control plane / protected vault → Agent Runtime** — PotatoGuard makes the final authorization decision before any protected file is mounted into the disposable Runtime.
+
+The diagram explicitly identifies the **enforcement point**, **instrumentation/audit path**, and **denial/containment/recovery behavior**.
+
+## Request Path
+
+1. A human signs in and receives a server-managed HttpOnly session.
+2. The server resolves the human actor from that session.
+3. The human owns Agents, but each Agent has a separate `principalId`.
+4. The user grants bounded protected-resource authority to an Agent or authorized Team Task specialist.
+5. A protected Agent turn requests access to a resource.
+6. PotatoGuard evaluates ownership and active capability state **before Runtime execution**.
+7. On **DENY**, the server records evidence and does not create the protected Run/mount.
+8. On **ALLOW**, only the approved resource is mounted read-only into the Runtime and the real Codex/Ark-backed Agent turn proceeds.
+9. Authorization and execution evidence are correlated in the audit trail.
+
+## Repository Structure
+
+```text
+apps/server/src/
+  app.ts                        # HTTP/session boundary and protected-run routes
+  security-service.ts           # PotatoGuard policy, grants, ownership, receipts
+  security-service.test.ts      # Authorization / lease / sharing tests
+  agent-service.ts              # Agent lifecycle and Run management
+  agent-service.test.ts
+  team-task-service.ts          # Lead/specialist coordination + scoped delegation
+  team-task-service.test.ts
+  container-codex-runner.ts     # Disposable Runtime and protected mounts
+  container-codex-runner.test.ts
+  audit.ts                      # Receipt hashing and verification primitives
+  store.ts                      # Local JSON persistence
+  store.test.ts
+  types.ts                      # Agent, principal, grant and decision structures
+
+apps/web/src/
+  App.tsx                       # Main UI, resources, sharing, receipts
+  TeamTaskView.tsx              # Team Task + inline authorization controls
+
+docs/
+  POTATOGUARD_ARCHITECTURE.md   # Required one-page architecture
+  demo-runbook.md               # Exact three-minute live demo
+  JUDGE_RUNBOOK.md              # Extended validation / edge cases
+
+scripts/
+  start-local-poc.sh            # One-command local judging path
 ```
 
-The startup script reads only those three Ark settings from `.env`; it ignores
-Docker-only paths and other shell settings. You can also supply them explicitly:
+## Prerequisites
+
+- **Node.js 22+**
+- **npm 10+**
+- one supported container engine: **Docker**, **Colima**, or **rootless Podman**
+- a **Volcengine/BytePlus Ark API key** and a model/endpoint that supports the OpenAI-compatible Responses API
+
+Codex CLI is included in the Runtime image; a host Codex installation is not required.
+
+## Setup
+
+### 1. Clone
 
 ```bash
+git clone https://github.com/waiyeeyuen/SmallPotato.git
+cd SmallPotato
+```
+
+### 2. Install and configure
+
+```bash
+npm install
 cp .env.example .env
-# Fill ARK_API_KEY and ARK_MODEL in .env, then run:
+```
+
+Set the Ark values required by your account/region in `.env`:
+
+```env
+ARK_API_KEY=replace-with-your-ark-api-key
+ARK_MODEL=replace-with-your-model-or-endpoint-id
+```
+
+`ARK_BASE_URL` can remain at the value appropriate for the configured Ark environment. **Use an Ark model API key, not a Volcengine/BytePlus account AK/SK.**
+
+Never commit the real `.env` file.
+
+### 3. Validate the repository
+
+```bash
+npm run check
+```
+
+`npm run check` runs:
+
+```text
+typecheck -> server test suite -> production web/server builds
+```
+
+All stages should pass before judging.
+
+## Run Locally
+
+Start the local POC:
+
+```bash
 npm run poc
 ```
 
-Values passed directly in the command environment override `.env`.
+The script installs dependencies if needed, builds the local disposable Runtime image, prepares deterministic fictional demo data, selects a supported container engine, and starts the app on port `3000`.
 
-The first run installs Node.js dependencies and builds the Runtime image. The
-script automatically selects Docker, Colima, or Podman.
+Open:
 
-### 4. Open the browser
+**http://localhost:3000**
 
-Visit <http://localhost:3000>, or open it from the terminal:
-
-```bash
-open http://localhost:3000       # macOS
-xdg-open http://localhost:3000   # Linux desktop
-```
-
-Sign in with one of the seeded, fictional demo accounts:
+Seeded fictional demo accounts:
 
 | User | Username | Password |
 | --- | --- | --- |
 | Alice Tan | `alice` | `alice-potato` |
 | Bob Lim | `bob` | `bob-potato` |
 
-These published credentials are controlled fixtures, not production accounts.
+These are intentionally published hackathon fixtures, **not production credentials**.
 
-Signing in as **Alice** gives you seven ready, pre-seeded demo Agents (a Trip
-Coordinator plus six specialists) so both demos work with no setup. To add your
-own:
+## Automated Verification
 
-1. Select **Create agent**.
-2. Enter a name, description, and workspace instructions.
-3. Enter a task in the Playground, for example:
-
-   ```text
-   Create a TypeScript hello-world CLI, add a test, and run it.
-   ```
-
-The Agent can write files, run commands, and continue the same Codex session in
-later messages.
-
-### Team Tasks
-
-Select **Team tasks** in the sidebar (the pre-seeded Agents are ready to use, or
-create your own). Choose one Lead, one or more specialists, and describe a shared
-objective. Optionally attach one of the signed-in user's protected documents.
-The recommended **Authorize for this task** option records explicit consent,
-issues a distinct read-only capability to each final specialist, restricts every
-capability to this task ID, and revokes all of them when the Team ends. If **The
-Lead picks them**, the Lead first chooses a roster using only the objective and
-Agent descriptions; capabilities are issued only after that roster is validated.
-The Lead receives metadata and coordination context, never the raw document.
-
-For higher-control data, choose **Ask me when needed**. The first specialist
-without permission is denied before its Runtime starts and a middleware-generated
-approval card appears in the Team conversation. The user may allow one turn,
-allow that Agent for the Team, allow the current roster, or deny and stop the
-request. Approval resumes the blocked specialist automatically; the model cannot
-create or resolve the request itself.
-
-The selected specialists
-form an authorized pool rather than a fixed sequence. After each contribution, the Lead
-receives the updated actor-labelled transcript and dynamically selects the specialist
-best suited to build on, refine, verify, or challenge the conversation. Specialists also
-share one task workspace, with sequential turns so file writes remain deterministic.
-Contributions, handoffs, active assignment, elapsed time, retries, shared-state patches,
-and final Lead synthesis remain visible in one persistent chat transcript. After an
-answer, the same reserved team, Codex threads, roster, and shared workspace stay ready
-for the next message. Each message may select a different protected document. A running
-request can be cancelled without ending the team; **End team** releases its Agents.
-
-For a quick demo, pick **Trip Coordinator** as Lead with the three travel
-specialists, and ask it to plan a short trip within a budget.
-
-See the [coordination architecture](docs/COORDINATION_ARCHITECTURE.md) and
-[judge runbook](docs/JUDGE_RUNBOOK.md) for the exact end-to-end flow.
-
-### Cross-user file sharing
-
-Every protected file belongs to one user. Another user's Agents cannot read it
-until the **owner** shares it.
-
-1. Sign in as **Bob**, open **Protected resources**, and press **Share** on
-   *Partnerships Brief*. Pick Alice, enter a purpose, optionally set an expiry,
-   and grant read access. (This share is also seeded on startup so the happy
-   path works immediately.)
-2. Sign in as **Alice**, open an Agent's **Playground**, pick *Partnerships
-   Brief* in the protected-resource selector (`· shared with you`), and send a
-   prompt. The file mounts read-only and the run proceeds.
-3. Still as Alice, pick *Finance Report* instead — Bob never shared it. The run
-   is refused immediately with `SHARE_MISSING`; nothing mounts and the Runtime
-   never starts.
-4. Back as Bob, **Revoke** the share (or let it expire). Alice's next run is
-   denied with `SHARE_REVOKED`.
-
-Every step is a hash-chained receipt. Alice sees her reads in each Agent's
-**Audit receipts** tab; Bob sees the share, the revoke, and every read Alice's
-Agents made on his files in the account-level **Sharing** tab (with CSV export).
-
-Limitations: sharing is read-only, only the owner can share (no re-sharing by
-the grantee), and a share applies to all of the grantee's Agents.
-
-### 5. Stop and resume
-
-Press `Ctrl+C` in the startup terminal. The script removes temporary Runtime
-containers but keeps Agent workspaces and conversations.
-
-- macOS state: `~/.volc-agent-launchpad/`
-- Linux state: `.local/`
-- Custom location: set `LOCAL_POC_DATA_ROOT`
-
-Run the same `npm run poc` command to continue later.
-
-### Select a specific container engine
-
-Force Podman when multiple engines are installed:
+Run the full submission check:
 
 ```bash
-CONTAINER_ENGINE=podman \
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
-npm run poc
+npm run check
 ```
 
-Colima uses `CONTAINER_ENGINE=docker` because it exposes the Docker CLI.
+The server test suite includes coverage across the middleware boundary, including tests for:
 
-For a clean Linux host, follow the
-[rootless Podman setup](docs/LOCAL_POC.md#rootless-podman-on-linux).
+- authentication/session behavior;
+- Agent ownership and foreign-user isolation;
+- strict HTTP request schemas that reject browser-controlled ownership fields;
+- scoped grant authorization;
+- missing, expired and revoked grants;
+- cross-user sharing and denial;
+- protected Runtime mount behavior;
+- Team Task authorization and approval/resume behavior;
+- resource deletion/cleanup; and
+- audit receipt hash-chain verification and tamper detection.
 
-## Docker Compose
+Important test files:
 
-Create and edit the configuration:
-
-```bash
-./scripts/bootstrap-local.sh
+```text
+apps/server/src/security-service.test.ts
+apps/server/src/app.test.ts
+apps/server/src/agent-service.test.ts
+apps/server/src/team-task-service.test.ts
+apps/server/src/container-codex-runner.test.ts
+apps/server/src/store.test.ts
 ```
 
-Required values in `.env`:
+## Security Properties Demonstrated
 
-```dotenv
-ARK_API_KEY=your-ark-api-key
-ARK_MODEL=ep-your-endpoint-id
-APP_AUTH_TOKEN=replace-with-at-least-24-random-characters
-```
+| Property | Enforcement / evidence |
+| --- | --- |
+| **Server-derived human identity** | HttpOnly server session; strict request schemas reject browser-controlled identity/owner fields. |
+| **Independent Agent identity** | Server-generated Agent `principalId` distinct from the owning human. |
+| **Least privilege** | Temporary capabilities scoped to an Agent, resource, action and relevant context/expiry. |
+| **Revocation / expiry** | State checked on each protected request; stale authority is denied. |
+| **Pre-Runtime enforcement** | PotatoGuard evaluates access before the protected file is mounted or protected Agent Run proceeds. |
+| **Cross-user isolation** | Foreign resources/Agents require explicit authority; inappropriate direct lookups are filtered/denied. |
+| **Read-only protected mount** | Approved protected resource enters the local disposable Runtime as a read-only mount. |
+| **Tamper evidence** | Hash-chained receipts can be verified; mutation breaks chain verification. |
+| **Sensitive-data handling** | Protected contents are not placed in audit CSVs; sensitive request headers are redacted by server logging where configured. |
 
-Start the application:
+## Limitations
 
-```bash
-docker compose up --build
-```
+PotatoGuard is intentionally a **hackathon-scale proof of concept**, not a production IAM or multi-tenant security platform.
 
-Open <http://localhost:3000>. Stop it without deleting Agent data:
+Current limitations include:
 
-```bash
-docker compose down
-```
+- seeded local identities rather than enterprise OIDC/SSO;
+- single-process/local JSON persistence rather than a transactional authorization/session store;
+- locally stored hash-chained receipts rather than externally signed or WORM-backed audit evidence;
+- ordinary local Docker/Podman isolation rather than a hardened multi-tenant sandbox;
+- broad Runtime outbound network access;
+- prompt-triggered command and file execution is intentionally supported by the Agent Runtime;
+- the Ark key is available to the server and active Runtime container for inference;
+- no complete production CSRF strategy;
+- no per-Agent container boundary in the optional ECS deployment path; and
+- the POC has not undergone an independent production security audit.
+
+See **[SECURITY.md](SECURITY.md)** for the complete security boundary and safe-use guidance.
+
 
 ## Development
 
 ```bash
-npm install
-cp .env.example .env
-npm install --global @openai/codex@0.111.0
-npm run dev
+npm run dev       # local development
+npm run test      # server tests
+npm run build     # production builds
+npm run check     # typecheck + tests + builds
 ```
 
-- Web UI: <http://localhost:5173>
-- API: <http://localhost:3000>
-
-Use local paths in `.env` when running outside Docker:
-
-```dotenv
-APP_DATA_DIR=.data
-AGENT_WORKSPACE_ROOT=workspaces
-CODEX_HOME=codex-home
-```
-
-## Deployment
-
-- [Existing Linux ECS with Docker](docs/DEPLOYMENT.md#existing-linux-ecs)
-- [Complete Volcengine environment with Terraform](docs/DEPLOYMENT.md#terraform-deployment)
-- [Local Docker, Colima, and Podman details](docs/LOCAL_POC.md)
-
-The existing-ECS script deploys from the current source tree:
-
-```bash
-cp .env.example .env.production
-./scripts/deploy-existing-ecs.sh .env.production
-```
-
-The Terraform path provisions VPC, subnet, security group, ECS, and EIP:
-
-```bash
-cp deploy/volcengine/terraform.tfvars.example \
-  deploy/volcengine/terraform.tfvars
-./scripts/deploy-volcengine.sh
-```
-
-## Configuration
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `ARK_API_KEY` | Required | Ark model API key. |
-| `ARK_MODEL` | Required | Responses-capable endpoint or model ID. |
-| `ARK_BASE_URL` | Beijing v3 endpoint | Ark OpenAI-compatible API URL. |
-| `APP_AUTH_TOKEN` | Empty on loopback | Shared demo token; use 24+ random characters remotely. |
-| `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
-| `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
-| `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
-| `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
-
-See [.env.example](.env.example) for all Runtime and resource-limit options.
-
-## How it works
-
-```mermaid
-flowchart LR
-    UI["React Web UI"] --> API["Fastify control plane"]
-    API --> Store["JSON metadata and Agent workspaces"]
-    API --> Team["Team Task coordinator"]
-    Team --> Store
-    Team --> Runtime
-    API --> Runtime{"Runtime provider"}
-    Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
-    Runtime -->|ECS profile| Codex["Codex CLI in application container"]
-    Container --> Ark["Volcengine Ark Responses API"]
-    Codex --> Ark
-```
-
-The first turn uses `codex exec`; later turns resume the stored Codex thread.
-Deleting an Agent archives its workspace under `workspaces/.deleted/`.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
-boundaries.
-
-## Validation
-
-```bash
-npm run check
-terraform fmt -check -recursive deploy/volcengine
-docker compose config
-```
-
-The automated suite includes authentication, foreign-Agent and foreign-task
-isolation, cross-user resource denial, missing/revoked/expired grants,
-task-capability non-reuse, terminal revocation, read-only Runtime mounts,
-coordinator recovery, and hash-chain tamper detection.
-
-## Judging evidence
-
-The current event rules score four criteria equally. This repository maps them
-to visible and testable evidence rather than slide-only claims:
-
-| Criterion | Submission evidence |
-| --- | --- |
-| Technical execution | Server-resolved sessions, per-Agent principals, task-bound capabilities, pre-Runtime policy checks, read-only container mounts, persistent coordination state, structured Lead decisions, retries, and two verified receipt chains |
-| Innovation and problem insight | Treats delegation authority and data authority as independent; human ownership does not silently become standing Agent privilege |
-| Feasibility and practicality | One-click task consent solves lease fatigue; inline step-up approval preserves human control for high-risk workflows; Docker SOP, health checks, migrations, CSV evidence, and automated tests make the demo reproducible |
-| Impact and relevance | Enables useful multi-Agent work over private context while preserving tenant isolation, least privilege, attribution, revocation, and failure recovery |
-
-See the [official rules](https://tiktoktechjam2026.devpost.com/rules) for the
-authoritative wording and [UNIFIED_DEMO.md](docs/UNIFIED_DEMO.md) for the exact
-three-minute proof.
-
-## Honest limitations
-
-- Local seeded users and a single-process JSON store replace production OIDC and
-  a transactional policy database.
-- Hash chains make mutation detectable but are not signed or written to an
-  external append-only/WORM audit system.
-- Protected actions are intentionally read-only; there is no write-capability
-  workflow in this submission.
-- The coordinator serializes turns within a task and permits one open task per
-  user. Production would add a durable queue and per-workspace locks.
-- Task capabilities expire after 30 minutes as a crash-safe upper bound and are
-  also revoked when the persistent team is explicitly ended.
-- Local Runtime containers share the host Codex configuration/session store so
-  existing conversations can resume. Protected vault files are never stored
-  there, but production must isolate Codex state per Agent principal.
+Press `Ctrl+C` to stop the local POC. Local Agent workspaces/conversation state are preserved by the configured local data root unless explicitly cleaned up.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Multi-Agent coordination architecture](docs/COORDINATION_ARCHITECTURE.md)
-- [Three-minute demo script](docs/UNIFIED_DEMO.md)
-- [Local POC](docs/LOCAL_POC.md)
-- [Deployment](docs/DEPLOYMENT.md)
-- [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
-- [Judge runbook](docs/JUDGE_RUNBOOK.md)
-- [Security policy](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
+- **Architecture:** [docs/POTATOGUARD_ARCHITECTURE.md](docs/POTATOGUARD_ARCHITECTURE.md)
+- **Three-minute demo:** [docs/demo-runbook.md](docs/demo-runbook.md)
+- **Extended judge runbook:** [docs/JUDGE_RUNBOOK.md](docs/JUDGE_RUNBOOK.md)
+- **Security policy / limitations:** [SECURITY.md](SECURITY.md)
 
 ## License
 
-[MIT](LICENSE)
+This project builds on the Volc Agent Launchpad starter kit. See [LICENSE](LICENSE) for license and attribution details.

@@ -69,9 +69,9 @@ fictional content only.
 
 ## Team Task authorization
 
-A Team Task may attach one resource owned by the signed-in user. Every
-**specialist** turn is authorized independently before the Runtime is touched;
-the Lead is never granted the document, so delegation cannot widen data access.
+A Team chat request may name one protected resource. Every **specialist** turn is then
+authorized independently before the Runtime is touched; the Lead is never granted
+the document, so delegation cannot widen data access.
 
 | Step | You do | System does | Show judges |
 | --- | --- | --- | --- |
@@ -124,13 +124,15 @@ outside that task.
   once, records the failure, then returns the updated transcript to the Lead for a
   dynamic recovery decision.
 
-### Consecutive tasks and stale state
+### Persistent Team chat
 
-- Complete a task and immediately select **Start another task**. The form is
-  usable at once and auto-focuses the objective.
-- Start the second task. Task history contains both, only the second is running,
-  turn counts restart at zero, its queue begins empty, and no first-task thread or
-  shared state appears in the detail view.
+- Complete a request. The same conversation shows **Ready**, keeps its roster
+  reserved, and enables the composer immediately.
+- Send a second request, optionally with a different protected document. The transcript,
+  Agent threads, and workspace persist while turn counts, coordination policy, and
+  request shared state restart for the new request.
+- Use **Stop** to cancel only the current request, then send another. Use **End team**
+  to make the conversation read-only and release its Agents.
 
 ### Coordination modes
 

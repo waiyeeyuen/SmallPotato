@@ -41,7 +41,8 @@ flowchart LR
   Playground and high-risk approval/recovery demos.
 - **Team Task:** explicit attach-time consent creates separate specialist grants,
   each additionally bound to one task ID. They cannot authorize Playground or a
-  different task and are revoked on completion, failure, or stop.
+  different task. They remain available across requests in that persistent team
+  and are revoked when the team ends.
 
 The Lead never gets a protected mount. Delegation therefore cannot widen data
 authority. Every specialist is checked on every protected turn.

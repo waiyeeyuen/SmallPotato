@@ -34,7 +34,7 @@ The submission includes:
 - Per-user Agent ownership and a separate principal for every Agent
 - Time-limited capability leases scoped to one Agent, action, and resource
 - One-click Team Task consent that issues separate task-bound capabilities to
-  the specialist roster and revokes them automatically at completion or stop
+  the specialist roster and revokes them automatically when the team ends
 - Protected-resource create, metadata/content replacement, and safe deletion
 - Cross-user resource sharing: the owner grants another user read access to a
   chosen file (optional expiry, owner-only revoke); the grantee's Agents can then
@@ -167,9 +167,10 @@ receives the updated actor-labelled transcript and dynamically selects the speci
 best suited to build on, refine, verify, or challenge the conversation. Specialists also
 share one task workspace, with sequential turns so file writes remain deterministic.
 Contributions, handoffs, active assignment, elapsed time, retries, shared-state patches,
-and final Lead synthesis remain visible and persisted.
-Active tasks can be stopped. Tasks paused by a restart or Lead failure can be resumed,
-and a completed task can be followed immediately by a fresh task without a refresh.
+and final Lead synthesis remain visible in one persistent chat transcript. After an
+answer, the same reserved team, Codex threads, roster, and shared workspace stay ready
+for the next message. Each message may select a different protected document. A running
+request can be cancelled without ending the team; **End team** releases its Agents.
 
 For a quick demo, pick **Trip Coordinator** as Lead with the three travel
 specialists, and ask it to plan a short trip within a budget.
@@ -375,7 +376,7 @@ three-minute proof.
 - The coordinator serializes turns within a task and permits one open task per
   user. Production would add a durable queue and per-workspace locks.
 - Task capabilities expire after 30 minutes as a crash-safe upper bound and are
-  also revoked on completion, failure, or explicit stop.
+  also revoked when the persistent team is explicitly ended.
 - Local Runtime containers share the host Codex configuration/session store so
   existing conversations can resume. Protected vault files are never stored
   there, but production must isolate Codex state per Agent principal.

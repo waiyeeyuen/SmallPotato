@@ -24,6 +24,8 @@ describe("HTTP boundary", () => {
     const createArgs: unknown[] = [];
     const createActors: unknown[] = [];
     const readActors: unknown[] = [];
+    const messageArgs: unknown[] = [];
+    const cancelActors: unknown[] = [];
     const teamTasks = {
       createTask: async (actor: unknown, input: unknown) => {
         createActors.push(actor);
@@ -35,6 +37,8 @@ describe("HTTP boundary", () => {
       getTask: (actor: unknown) => { readActors.push(actor); return task; },
       getEvents: (actor: unknown) => { readActors.push(actor); return []; },
       verifyEventChain: (actor: unknown) => { readActors.push(actor); return true; },
+      sendMessage: async (...args: unknown[]) => { messageArgs.push(args); return task; },
+      cancelRequest: async (actor: unknown) => { cancelActors.push(actor); return task; },
     } as unknown as TeamTaskService;
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service, security, teamTasks);
     const invalid = await app.inject({ method: "POST", url: "/api/team-tasks", payload: { objective: "Ship", leadAgentId: "bad", specialistAgentIds: [] } });
@@ -95,6 +99,27 @@ describe("HTTP boundary", () => {
     expect(readActors).toEqual(expect.arrayContaining([
       expect.objectContaining({ userId: "user-alice" }),
     ]));
+    const message = await app.inject({
+      method: "POST",
+      url: "/api/team-tasks/" + task.id + "/messages",
+      payload: { content: "Follow up", resourceId: "resource-1" },
+    });
+    expect(message.statusCode).toBe(202);
+    expect(messageArgs[0]).toEqual([
+      expect.objectContaining({ userId: expect.any(String) }),
+      task.id,
+      "Follow up",
+      "resource-1",
+    ]);
+    const invalidMessage = await app.inject({
+      method: "POST",
+      url: "/api/team-tasks/" + task.id + "/messages",
+      payload: { content: "" },
+    });
+    expect(invalidMessage.statusCode).toBe(400);
+    const cancelled = await app.inject({ method: "POST", url: "/api/team-tasks/" + task.id + "/cancel" });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelActors[0]).toMatchObject({ userId: expect.any(String) });
     await app.close();
   });
 

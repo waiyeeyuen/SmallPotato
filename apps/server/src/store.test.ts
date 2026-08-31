@@ -22,7 +22,12 @@ describe("JsonStore", () => {
     const timestamp = new Date().toISOString();
     await writeFile(filePath, JSON.stringify({
       version: 4,
-      agents: [], messages: [], runs: [], teamTaskEvents: [],
+      agents: [], messages: [], runs: [], teamTaskEvents: [{
+        id: "event-1", taskId: "task-1", sequence: 1, type: "task_started",
+        agentId: null, content: "Started", chatContent: null, assignment: null,
+        attempt: null, statePatch: null, previousReceiptHash: null,
+        receiptHash: "legacy-receipt", createdAt: timestamp,
+      }],
       teamTasks: [{
         id: "task-1", objective: "Existing council", mode: "council",
         leadAgentId: "lead", specialistAgentIds: ["specialist"], status: "completed",
@@ -43,6 +48,9 @@ describe("JsonStore", () => {
     expect(store.snapshot().teamTasks[0]?.turnPolicy).toBeNull();
     expect(store.snapshot().teamTasks[0]?.agentSelection).toBe("user");
     expect(store.snapshot().teamTasks[0]?.resourceAccessMode).toBe("manual");
+    expect(store.snapshot().teamTasks[0]?.rosterLocked).toBe(true);
+    expect(store.snapshot().teamTasks[0]?.activeRequestSequence).toBeNull();
+    expect(store.snapshot().teamTaskEvents[0]?.receiptHash).toBe("legacy-receipt");
     expect(JSON.parse(await readFile(filePath + ".v4.backup", "utf8")).version).toBe(4);
     expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(6);
   });

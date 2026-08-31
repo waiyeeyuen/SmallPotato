@@ -15,7 +15,7 @@ The recommended flow is automatic but not ambient: selecting **Authorize for
 this task** is Alice's explicit consent to create separate temporary read
 capabilities for the final specialist roster. Each capability carries the task
 ID, cannot be reused in the Playground or another task, and is revoked when the
-task completes, fails, or stops. The Lead never receives the document.
+persistent team ends. The Lead never receives the document.
 
 ## Prepared state
 
@@ -44,8 +44,8 @@ Use `alice` / `alice-potato`. All demo content is fictional.
 | 0:45–1:05 | Open **Audit receipts**. Point to the red deny row, Alice → Agent principal, Finance Report, and **Hash chain verified**. | “The backend denied this before execution and still produced attributable evidence: human, Agent principal, action, resource, reason, and hash.” | Identity and authorization failure path with auditable evidence. |
 | 1:05–1:45 | Click **Team tasks** → **New task** if needed. Paste the objective below. Choose **Trip Coordinator**, **You pick them**, **Flight & Hotel Scout**, **Budget Analyst**, and **Tokyo Travel Profile**. Leave **Authorize for this task** selected. Click **Start task**. | “Now Alice explicitly attaches her own travel profile to one team task. PotatoGuard creates a separate read-only capability for each selected specialist, bound to this task only. The Lead coordinates but never sees the raw document.” | Task-access event appears, roster is reserved, Lead establishes a coordination plan and delegates. |
 | 1:45–2:25 | Show the live conversation. Point to **Task-scoped access**, current Agent/assignment, then the green **Access decision · ALLOW** event when it appears. | “The Lead chooses who should work next. Before every specialist turn, policy independently checks that exact principal, document, action, expiry, and task ID. Only then is the document mounted read-only into that disposable turn.” | Multi-Agent routing and authorization are part of one real workflow. |
-| 2:25–2:45 | When complete, point to the final Lead synthesis and **Task access closed**. If still running, open **Activity log** and point to its verified badge plus handoffs/ALLOW rows. | “The specialists use the dates, budget, and preferences, and the Lead synthesizes their actor-labelled contributions. At the terminal boundary, every task capability is revoked automatically.” | Real private-context output; coordination and capability lifecycle are visible. |
-| 2:45–3:00 | Select a specialist → **Access leases** (show revoked task-scoped lease), then **Audit receipts** (show Team Task ALLOW). | “Delegation decided who worked; capability policy decided what each Agent could read. Neither authority was claimed by a model, and both are tamper-evident.” | Auto-revocation and correlated authorization evidence close the story. |
+| 2:25–2:45 | When the answer is ready, point to the final Lead synthesis and the enabled follow-up composer. Then click **End team** and point to **Task access closed**. | “The specialists use the dates, budget, and preferences, and the Lead synthesizes their actor-labelled contributions. The roster and access remain available for follow-ups until Alice ends the team; then every task capability is revoked.” | Real private-context output and the persistent-team lifecycle are visible. |
+| 2:45–3:00 | Select a specialist → **Access leases** (show revoked task-scoped lease), then **Audit receipts** (show Team Task ALLOW). | “Delegation decided who worked; capability policy decided what each Agent could read. Neither authority was claimed by a model, and both are tamper-evident.” | End-of-team revocation and correlated authorization evidence close the story. |
 
 Use this exact objective:
 

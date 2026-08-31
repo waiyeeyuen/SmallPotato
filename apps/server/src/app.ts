@@ -27,6 +27,10 @@ const messageBody = z.object({
   resourceId: z.string().trim().min(1).max(120).optional(),
 }).strict();
 const teamTaskIdParams = z.object({ id: z.string().uuid() });
+const teamMessageBody = z.object({
+  content: z.string().trim().min(1).max(20_000),
+  resourceId: z.string().trim().min(1).max(120).optional(),
+}).strict();
 const createTeamTaskBody = z.object({
   objective: z.string().trim().min(1).max(20_000),
   leadAgentId: z.string().uuid(),
@@ -289,6 +293,23 @@ export async function createApp(
         events: teamTasks.getEvents(actor, id),
         eventsVerified: teamTasks.verifyEventChain(actor, id),
       };
+    });
+
+    app.post("/api/team-tasks/:id/messages", async (request, reply) => {
+      const { id } = teamTaskIdParams.parse(request.params);
+      const body = teamMessageBody.parse(request.body);
+      const task = await teamTasks.sendMessage(
+        await actorFor(request),
+        id,
+        body.content,
+        body.resourceId,
+      );
+      return reply.code(202).send({ task });
+    });
+
+    app.post("/api/team-tasks/:id/cancel", async (request) => {
+      const { id } = teamTaskIdParams.parse(request.params);
+      return { task: await teamTasks.cancelRequest(await actorFor(request), id) };
     });
 
     app.post("/api/team-tasks/:id/stop", async (request) => {

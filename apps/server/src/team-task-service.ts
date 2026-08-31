@@ -129,7 +129,6 @@ export class TeamTaskService {
         task.activeTurnStartedAt = null;
         task.lastError = "Server restarted while this Team Task was active";
         task.updatedAt = now();
-        this.releaseAgents(database, task);
         this.addEvent(database, task, "task_paused", null, task.lastError);
       }
     });
@@ -191,6 +190,7 @@ export class TeamTaskService {
           (agent) =>
             agent.ownerUserId === actor.userId &&
             agent.id !== input.leadAgentId &&
+            agent.ownerUserId === actor.userId &&
             agent.status === "ready" &&
             !agent.activeTeamTaskId,
         )
@@ -245,6 +245,10 @@ export class TeamTaskService {
     const timestamp = now();
     const id = randomUUID();
     const participantIds = [input.leadAgentId, ...specialistIds];
+    const resourceMetadata = this.resourceMessageMetadata(
+      this.store.snapshot(),
+      input.resourceId ?? null,
+    );
     const task: TeamTask = {
       id,
       ownerUserId: actor.userId,
@@ -254,8 +258,10 @@ export class TeamTaskService {
       resourceAccessMode,
       specialistAgentIds: specialistIds,
       agentSelection,
+      rosterLocked: agentSelection === "user",
       turnPolicy: null,
       status: "running",
+      activeRequestSequence: null,
       workspacePath: this.workspaces.teamTaskWorkspacePath(id),
       currentAgentId: input.leadAgentId,
       currentAssignment: "Review the objective, choose how the team will coordinate, and make the first hand-off.",
@@ -274,9 +280,9 @@ export class TeamTaskService {
     };
 
     if (this.store.snapshot().teamTasks.some(
-      (item) => item.ownerUserId === actor.userId && ["running", "paused"].includes(item.status),
+      (item) => item.ownerUserId === actor.userId && ["ready", "running", "paused"].includes(item.status),
     )) {
-      throw new HttpError(409, "Finish or stop the existing Team Task first");
+      throw new HttpError(409, "End the existing Team conversation first");
     }
     this.validateAvailableAgents(actor, participantIds);
     // Manual mode: every specialist must already be authorized (an owner's
@@ -290,13 +296,24 @@ export class TeamTaskService {
     await this.workspaces.createTeamTaskWorkspace(task);
     await this.store.mutate((database) => {
       if (database.teamTasks.some(
-        (item) => item.ownerUserId === actor.userId && ["running", "paused"].includes(item.status),
+        (item) => item.ownerUserId === actor.userId && ["ready", "running", "paused"].includes(item.status),
       )) {
-        throw new HttpError(409, "Finish or stop the existing Team Task first");
+        throw new HttpError(409, "End the existing Team conversation first");
       }
       this.reserveAgents(database, task);
       database.teamTasks.push(task);
       this.addEvent(database, task, "task_started", null, "Team Task started");
+      const message = this.addEvent(
+        database,
+        task,
+        "user_message",
+        null,
+        task.objective,
+        null,
+        null,
+        resourceMetadata,
+      );
+      task.activeRequestSequence = message.sequence;
     });
     if (task.resourceId && task.resourceAccessMode === "task" && agentSelection === "user") {
       await this.issueTaskAccess(task);
@@ -305,12 +322,101 @@ export class TeamTaskService {
     return task;
   }
 
-  async stopTask(actor: RequestActor, id: string): Promise<TeamTask> {
+  async sendMessage(
+    actor: RequestActor,
+    id: string,
+    content: string,
+    resourceId?: string,
+  ): Promise<TeamTask> {
+    if (!isArkConfigured(this.config)) {
+      throw new HttpError(503, "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.");
+    }
     const current = this.getTask(actor, id);
-    const activeAgentId = current.currentAgentId;
+    if (this.activeExecutions.has(id)) {
+      throw new HttpError(409, "The Team is still finishing its current request");
+    }
+    if (current.status !== "ready") {
+      throw new HttpError(409, "The Team is not ready for another message");
+    }
+    const requiredResource = this.resolveRequiredResource(actor, content, resourceId ?? null);
+    if (requiredResource && current.resourceAccessMode === "manual") {
+      await this.preflightResourceAccess(actor, requiredResource.resourceId, current.specialistAgentIds);
+    }
+    if (current.resourceId !== (requiredResource?.resourceId ?? null)) {
+      await this.revokeTaskAccess(current);
+    }
     const task = await this.store.mutate((database) => {
       const stored = this.findTask(database, id);
+      this.assertOwner(stored, actor);
+      if (stored.status !== "ready") {
+        throw new HttpError(409, "The Team is not ready for another message");
+      }
+      stored.objective = content.trim();
+      stored.resourceId = requiredResource?.resourceId ?? null;
+      stored.turnPolicy = null;
+      stored.status = "running";
+      stored.currentAgentId = stored.leadAgentId;
+      stored.currentAssignment = "Review the new request, choose how the team will coordinate, and make the first hand-off.";
+      stored.assignmentQueue = [];
+      stored.activeTurnStartedAt = null;
+      stored.turnCount = 0;
+      stored.sharedState = { phase: "starting" };
+      stored.stateVersion = 0;
+      stored.completionSummary = null;
+      stored.lastError = null;
+      stored.completedAt = null;
+      stored.updatedAt = now();
+      const message = this.addEvent(
+        database,
+        stored,
+        "user_message",
+        null,
+        stored.objective,
+        null,
+        null,
+        this.resourceMessageMetadata(database, stored.resourceId),
+      );
+      stored.activeRequestSequence = message.sequence;
+      return structuredClone(stored);
+    });
+    if (task.resourceId && task.resourceAccessMode === "task") {
+      await this.issueTaskAccess(task);
+    }
+    this.schedule(id);
+    return task;
+  }
+
+  async cancelRequest(actor: RequestActor, id: string): Promise<TeamTask> {
+    const activeAgentId = this.getTask(actor, id).currentAgentId;
+    const task = await this.store.mutate((database) => {
+      const stored = this.findTask(database, id);
+      this.assertOwner(stored, actor);
       if (!["running", "paused"].includes(stored.status)) {
+        throw new HttpError(409, "There is no active Team request to cancel");
+      }
+      stored.status = "ready";
+      stored.currentAgentId = null;
+      stored.currentAssignment = null;
+      stored.assignmentQueue = [];
+      stored.activeTurnStartedAt = null;
+      stored.lastError = null;
+      stored.completedAt = now();
+      stored.updatedAt = stored.completedAt;
+      this.addEvent(database, stored, "request_cancelled", null, "Request cancelled by the user");
+      stored.activeRequestSequence = null;
+      return structuredClone(stored);
+    });
+    if (activeAgentId) await this.runner.cancel(activeAgentId);
+    await this.activeExecutions.get(id)?.catch(() => undefined);
+    return task;
+  }
+
+  async stopTask(actor: RequestActor, id: string): Promise<TeamTask> {
+    const activeAgentId = this.getTask(actor, id).currentAgentId;
+    const task = await this.store.mutate((database) => {
+      const stored = this.findTask(database, id);
+      this.assertOwner(stored, actor);
+      if (!["ready", "running", "paused"].includes(stored.status)) {
         throw new HttpError(409, "This Team Task is not active");
       }
       stored.status = "stopped";
@@ -318,6 +424,7 @@ export class TeamTaskService {
       stored.currentAssignment = null;
       stored.assignmentQueue = [];
       stored.activeTurnStartedAt = null;
+      stored.activeRequestSequence = null;
       stored.completedAt = now();
       stored.updatedAt = stored.completedAt;
       this.releaseAgents(database, stored);
@@ -341,13 +448,14 @@ export class TeamTaskService {
     }
     const task = await this.store.mutate((database) => {
       const stored = this.findTask(database, id);
+      this.assertOwner(stored, actor);
       if (stored.status !== "paused") throw new HttpError(409, "Only a paused Team Task can resume");
       if (database.teamTasks.some(
-        (item) => item.id !== id && item.ownerUserId === actor.userId && item.status === "running",
+        (item) => item.id !== id && item.ownerUserId === actor.userId && ["ready", "running", "paused"].includes(item.status),
       )) {
         throw new HttpError(409, "Another Team Task is already running");
       }
-      this.reserveAgents(database, stored);
+      this.ensureAgentsReserved(database, stored);
       stored.status = "running";
       stored.currentAgentId = stored.leadAgentId;
       stored.currentAssignment = "Review the interruption and decide how the team should continue.";
@@ -472,7 +580,7 @@ export class TeamTaskService {
                   ". If none fits, complete the task with what you have.",
               );
             }
-            if (this.specialistContributionCount(task.id) >= MAX_COLLABORATION_ROUNDS) {
+            if (this.specialistContributionCount(task) >= MAX_COLLABORATION_ROUNDS) {
               throw new Error("The collaboration round limit was reached; the Lead must complete with the available evidence");
             }
           }
@@ -539,7 +647,7 @@ export class TeamTaskService {
       Object.assign(task.sharedState, response.statePatch);
       if (Object.keys(response.statePatch).length > 0) task.stateVersion += 1;
       if (task.turnPolicy === null && response.plan) {
-        const roster = task.agentSelection === "lead" && response.plan.rosterAgentIds
+        const roster = task.agentSelection === "lead" && !task.rosterLocked && response.plan.rosterAgentIds
           ? this.resolveRosterRefs(task, response.plan.rosterAgentIds).roster
           : null;
         task.turnPolicy = response.plan.turnPolicy;
@@ -548,6 +656,7 @@ export class TeamTaskService {
           this.releaseAgentsExcept(database, task, roster);
         }
         rosterCommitted = true;
+        task.rosterLocked = true;
         const rosterNames = task.specialistAgentIds
           .map((id) => database.agents.find((item) => item.id === id)?.name ?? "Unknown Agent")
           .join(", ");
@@ -563,15 +672,15 @@ export class TeamTaskService {
       }
       this.addEvent(database, task, "lead_decision", leadAgentId, response.message, null, null, response.statePatch);
       if (response.decision.type === "complete") {
-        task.status = "completed";
+        task.status = "ready";
         task.currentAgentId = null;
         task.currentAssignment = null;
         task.assignmentQueue = [];
         task.completionSummary = response.decision.summary;
         task.completedAt = now();
         task.updatedAt = task.completedAt;
-        this.addEvent(database, task, "task_completed", leadAgentId, response.decision.summary);
-        this.releaseAgents(database, task);
+        this.addEvent(database, task, "request_completed", leadAgentId, response.decision.summary);
+        task.activeRequestSequence = null;
         return { task: structuredClone(task), rosterCommitted, completed: true };
       }
       const delegation = response.decision;
@@ -603,7 +712,6 @@ export class TeamTaskService {
     ) {
       await this.issueTaskAccess(outcome.task);
     }
-    if (outcome.completed) await this.revokeTaskAccess(outcome.task);
   }
 
   private async applySpecialistResult(
@@ -685,8 +793,9 @@ export class TeamTaskService {
         .filter((item): item is Agent => Boolean(item))
         .map((item) => `- ${item.name} (${item.id}): ${item.description || "No description"}`)
         .join("\n");
-      const rosterField = task.agentSelection === "lead" ? `,"rosterAgentIds":["Agent name or id","..."]` : "";
-      const rosterInstruction = task.agentSelection === "lead"
+      const leadChoosesRoster = task.agentSelection === "lead" && !task.rosterLocked;
+      const rosterField = leadChoosesRoster ? `,"rosterAgentIds":["Agent name or id","..."]` : "";
+      const rosterInstruction = leadChoosesRoster
         ? `\n\nYou choose the roster from the Agents listed above ONLY. Copy their names exactly as written. Do NOT include yourself (you are the Lead, not a roster member) and do NOT invent an Agent that is not on the list. Include only the Agents whose described role directly serves this objective — most objectives need 2 to 4; leave out the rest. In plan.rosterAgentIds list at least ${minimum} of those exact names, and in your message give a one-line reason per pick. Agents you leave out are released and cannot be added back.`
         : `\n\nThe roster is fixed to the Agents above; you do not choose it, so omit plan.rosterAgentIds.`;
       return common + `\n\nThis is your first turn as Lead. Decide how the team will coordinate, then make the first hand-off. This choice is locked for the rest of the task.\n\nCoordination modes:\n- "sequential": the platform rotates through the roster in a fixed order, one turn each. Choose this when the objective is an ordered, turn-by-turn process such as a countdown, a relay, or numbered steps. You write each step's assignment; the platform picks who acts.\n- "facilitated": you pick the single most relevant Agent every turn. Choose this for open-ended work such as planning, research, debate, or design, where who should act next depends on the discussion.${rosterInstruction}\n\nIf you choose "sequential", the specialists reply with only a bare value each turn. Your first delegation must ask for the sequence's first value exactly as written in the objective — for "count down from 10 to 1" the first value is 10, not 9 — phrased as a direct instruction like "Reply with only: 10", and record it in statePatch (for example {"currentNumber":10}). Every later delegation names the one next value the same way.\n\nA minimum of ${minimum} distinct specialist${minimum === 1 ? "" : "s"} must contribute before you may complete, so your first turn must delegate, not complete.\n\nReply with JSON only, without markdown fences. If you chose "sequential":\n{"message":"why sequential fits this objective","plan":{"turnPolicy":"sequential"${rosterField}},"statePatch":{"phase":"starting","progress":"concise progress"},"decision":{"type":"delegate","assignment":"the first step of the sequence"}}\nIf you chose "facilitated":\n{"message":"why facilitated fits, and one reason per chosen Agent","plan":{"turnPolicy":"facilitated"${rosterField}},"statePatch":{"phase":"starting","progress":"concise progress"},"decision":{"type":"delegate","agentId":"the name or id of the first Agent to act","assignment":"the first assignment for that Agent"}}`;
@@ -701,8 +810,8 @@ export class TeamTaskService {
       const minimumContributors = Math.min(2, task.specialistAgentIds.length);
       return common + `\n\nYou are the Lead Agent coordinating a turn-by-turn sequential task. The platform rotates through the specialist pool in the fixed order below automatically — you do NOT choose who acts next. Each turn make exactly one decision:\n- If the sequence is not finished, delegate the single next atomic step. The specialist will reply with only a bare value, so write the assignment as a direct instruction that names that exact value, e.g. "The last number was 7. Reply with only: 6". Do not ask them to explain or confirm. Record progress in statePatch (for example {"currentNumber":6}).\n- If the transcript shows the sequence's final required contribution has been made, complete the task with a short summary.\nDo not skip, repeat, or reorder steps, and do not try to produce the whole sequence yourself. A minimum of ${minimumContributors} distinct specialist turn${minimumContributors === 1 ? "" : "s"} must occur before completion.\n\nSpecialist rotation order:\n${rotation}\n\nReply with JSON only, without markdown fences, using one of these shapes:\n{"message":"progress note for the Activity log","statePatch":{"phase":"in-progress","progress":"concise progress"},"decision":{"type":"delegate","assignment":"The last number was 7. Reply with only: 6"}}\n{"message":"the sequence is complete","statePatch":{"phase":"complete"},"decision":{"type":"complete","summary":"final result of the sequence"}}`;
     }
-    const contributedIds = this.contributedSpecialistIds(task.id);
-    const collaborationRounds = this.specialistContributionCount(task.id);
+    const contributedIds = this.contributedSpecialistIds(task);
+    const collaborationRounds = this.specialistContributionCount(task);
     const minimumContributors = Math.min(2, task.specialistAgentIds.length);
     const remainingRequiredContributors = Math.max(0, minimumContributors - contributedIds.size);
     const specialistCatalog = task.specialistAgentIds
@@ -819,7 +928,7 @@ export class TeamTaskService {
    * has already been narrowed to it.
    */
   private plannedRoster(task: TeamTask, decision: LeadDecision): string[] {
-    if (task.turnPolicy === null && task.agentSelection === "lead" && decision.plan?.rosterAgentIds) {
+    if (task.turnPolicy === null && task.agentSelection === "lead" && !task.rosterLocked && decision.plan?.rosterAgentIds) {
       return this.resolveRosterRefs(task, decision.plan.rosterAgentIds).roster;
     }
     return task.specialistAgentIds;
@@ -833,7 +942,7 @@ export class TeamTaskService {
     if (decision.decision.type !== "delegate") {
       throw new Error("The Lead's first turn must delegate the first step, not complete the task");
     }
-    if (task.agentSelection !== "lead") return;
+    if (task.agentSelection !== "lead" || task.rosterLocked) return;
     if (!decision.plan.rosterAgentIds || decision.plan.rosterAgentIds.length < 1) {
       throw new Error("The Lead must choose a roster (plan.rosterAgentIds) from these Agents: " + this.poolNames(task));
     }
@@ -873,18 +982,22 @@ export class TeamTaskService {
 
   private nextSequentialSpecialistId(database: Database, task: TeamTask): string {
     const handoffs = database.teamTaskEvents.filter(
-      (event) => event.taskId === task.id && event.type === "delegated",
+      (event) =>
+        event.taskId === task.id &&
+        event.sequence > (task.activeRequestSequence ?? 0) &&
+        event.type === "delegated",
     ).length;
     const specialistId = task.specialistAgentIds[handoffs % task.specialistAgentIds.length];
     if (!specialistId) throw new Error("Team Task has no specialist available for the next turn");
     return specialistId;
   }
 
-  private contributedSpecialistIds(taskId: string): Set<string> {
+  private contributedSpecialistIds(task: TeamTask): Set<string> {
     return new Set(
       this.store.snapshot().teamTaskEvents
         .filter((event) =>
-          event.taskId === taskId &&
+          event.taskId === task.id &&
+          event.sequence > (task.activeRequestSequence ?? 0) &&
           event.agentId &&
           event.type === "specialist_result",
         )
@@ -892,14 +1005,17 @@ export class TeamTaskService {
     );
   }
 
-  private specialistContributionCount(taskId: string): number {
+  private specialistContributionCount(task: TeamTask): number {
     return this.store.snapshot().teamTaskEvents.filter(
-      (event) => event.taskId === taskId && event.type === "specialist_result",
+      (event) =>
+        event.taskId === task.id &&
+        event.sequence > (task.activeRequestSequence ?? 0) &&
+        event.type === "specialist_result",
     ).length;
   }
 
   private minimumCollaborationReached(task: TeamTask): boolean {
-    const contributed = this.contributedSpecialistIds(task.id);
+    const contributed = this.contributedSpecialistIds(task);
     return contributed.size >= Math.min(2, task.specialistAgentIds.length);
   }
 
@@ -984,6 +1100,20 @@ export class TeamTaskService {
     }
   }
 
+  private ensureAgentsReserved(database: Database, task: TeamTask): void {
+    for (const id of [task.leadAgentId, ...task.specialistAgentIds]) {
+      const agent = database.agents.find((item) => item.id === id);
+      if (!agent) throw new HttpError(404, "Selected Agent not found");
+      if (agent.activeTeamTaskId === task.id && agent.status === "busy") continue;
+      if (agent.status !== "ready" || agent.activeTeamTaskId) {
+        throw new HttpError(409, agent.name + " is not ready to resume this Team conversation");
+      }
+      agent.status = "busy";
+      agent.activeTeamTaskId = task.id;
+      agent.updatedAt = now();
+    }
+  }
+
   private releaseAgents(database: Database, task: TeamTask): void {
     for (const agent of database.agents) {
       if (agent.activeTeamTaskId !== task.id) continue;
@@ -1020,6 +1150,22 @@ export class TeamTaskService {
     return task;
   }
 
+  private assertOwner(task: TeamTask, actor: RequestActor): void {
+    if (task.ownerUserId !== actor.userId) throw new HttpError(404, "Team Task not found");
+  }
+
+  private resourceMessageMetadata(
+    database: Database,
+    resourceId: string | null,
+  ): Record<string, JsonValue> | null {
+    if (!resourceId) return null;
+    const resource = database.resources.find(
+      (item) => item.id === resourceId && !item.deletedAt,
+    );
+    if (!resource) throw new HttpError(404, "Protected resource not found");
+    return { resourceId: resource.id, resourceName: resource.name };
+  }
+
   private findRunningTask(database: Database, id: string, agentId: string): TeamTask {
     const task = this.findTask(database, id);
     if (task.status !== "running" || task.currentAgentId !== agentId) {
@@ -1038,7 +1184,7 @@ export class TeamTaskService {
     attempt: number | null = null,
     statePatch: Record<string, JsonValue> | null = null,
     chatContent: string | null = null,
-  ): void {
+  ): TeamTaskEvent {
     const taskEvents = database.teamTaskEvents.filter((event) => event.taskId === task.id);
     const previous = taskEvents.reduce<TeamTaskEvent | null>(
       (latest, event) => (!latest || event.sequence > latest.sequence ? event : latest),
@@ -1047,13 +1193,15 @@ export class TeamTaskService {
     const sequence = (previous?.sequence ?? 0) + 1;
     const previousReceiptHash = previous?.receiptHash ?? null;
     const payload = { taskId: task.id, sequence, type, agentId, content, chatContent, assignment, attempt, statePatch };
-    database.teamTaskEvents.push({
+    const event: TeamTaskEvent = {
       id: randomUUID(),
       ...payload,
       previousReceiptHash,
       receiptHash: chainHash(payload, previousReceiptHash),
       createdAt: now(),
-    });
+    };
+    database.teamTaskEvents.push(event);
+    return event;
   }
 
   /**
@@ -1365,7 +1513,6 @@ export class TeamTaskService {
       task.activeTurnStartedAt = null;
       task.lastError = reason;
       task.updatedAt = now();
-      this.releaseAgents(database, task);
       this.addEvent(database, task, "task_paused", null, reason);
     });
   }
@@ -1374,7 +1521,7 @@ export class TeamTaskService {
     const task = await this.store.mutate((database) => {
       const task = this.findTask(database, id);
       if (task.status !== "running") return structuredClone(task);
-      task.status = "failed";
+      task.status = "ready";
       task.currentAgentId = null;
       task.currentAssignment = null;
       task.assignmentQueue = [];
@@ -1382,11 +1529,10 @@ export class TeamTaskService {
       task.lastError = reason;
       task.completedAt = now();
       task.updatedAt = task.completedAt;
-      this.releaseAgents(database, task);
-      this.addEvent(database, task, "turn_failed", null, reason);
+      this.addEvent(database, task, "request_failed", null, reason);
+      task.activeRequestSequence = null;
       return structuredClone(task);
     });
-    await this.revokeTaskAccess(task);
   }
 
   private async pauseUnexpectedly(id: string, reason: string): Promise<void> {

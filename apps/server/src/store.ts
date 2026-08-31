@@ -72,7 +72,11 @@ function normalizeDatabase(database: Database): Database {
       resourceId: task.resourceId ?? null,
       resourceAccessMode: task.resourceAccessMode ?? "manual",
       agentSelection: task.agentSelection ?? "user",
+      rosterLocked:
+        task.rosterLocked ??
+        !(task.agentSelection === "lead" && task.turnPolicy === null && ["running", "paused"].includes(task.status)),
       turnPolicy: task.turnPolicy ?? null,
+      activeRequestSequence: task.activeRequestSequence ?? null,
       assignmentQueue: task.assignmentQueue ?? [],
       activeTurnStartedAt: task.activeTurnStartedAt ?? null,
     })),
@@ -128,7 +132,7 @@ function migrateDatabase(value: unknown): Database {
     } else {
       base = parsed as unknown as Record<string, unknown>;
     }
-  } else if (parsed.version === 2 || parsed.version === 4 || parsed.version === 5) {
+  } else if (parsed.version === 2 || parsed.version === 4) {
     const legacy = parsed as Partial<Database>;
     if (Array.isArray(legacy.teamTasks) && Array.isArray(legacy.teamTaskEvents)) {
       base = {

@@ -18,14 +18,15 @@ interface Props {
   onError: (message: string) => void;
 }
 
-/** One rendered line of the team conversation: an Agent turn, or a short note. */
+/** One user-visible conversation turn. Operational detail stays in the Activity log. */
 type ChatEntry =
-  | { kind: "agent"; id: string; name: string; role?: string; body: string; at: string }
-  | { kind: "note"; id: string; tone: "info" | "allow" | "deny"; body: string; detail?: string | null; at: string };
+  | { kind: "user"; id: string; body: string; resourceName?: string; at: string }
+  | { kind: "agent"; id: string; name: string; role?: string; body: string; at: string };
 
 const terminalStatuses = new Set<TeamTask["status"]>(["completed", "failed", "stopped"]);
 
 const STATUS_LABEL: Record<TeamTask["status"], string> = {
+  ready: "Ready",
   running: "Working",
   paused: "Paused",
   completed: "Done",
@@ -35,6 +36,7 @@ const STATUS_LABEL: Record<TeamTask["status"], string> = {
 
 const EVENT_LABEL: Record<string, string> = {
   task_started: "Task started",
+  user_message: "You sent a task",
   turn_started: "Turn started",
   coordination_plan: "Plan set",
   lead_decision: "Lead update",
@@ -48,6 +50,9 @@ const EVENT_LABEL: Record<string, string> = {
   task_paused: "Paused",
   task_resumed: "Resumed",
   task_completed: "Task finished",
+  request_completed: "Request finished",
+  request_cancelled: "Request cancelled",
+  request_failed: "Request failed",
   task_stopped: "Stopped",
   system: "System",
 };
@@ -114,7 +119,7 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
     () => resources.find((resource) => resource.id === resourceId) ?? null,
     [resources, resourceId],
   );
-  const openTask = tasks.find((item) => item.status === "running" || item.status === "paused");
+  const openTask = tasks.find((item) => ["ready", "running", "paused"].includes(item.status));
   const participants = task ? [task.leadAgentId, ...task.specialistAgentIds] : [];
 
   const refreshTasks = useCallback(async () => {
@@ -233,11 +238,29 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
     }
   };
 
-  const action = async (kind: "stop" | "resume") => {
+  const sendTask = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!task || task.status !== "ready" || !objective.trim()) return;
+    setSubmitting(true);
+    try {
+      const result = await api.sendTeamMessage(task.id, objective.trim(), resourceId || undefined);
+      setObjective("");
+      setResourceId("");
+      setTask(result.task);
+      await refreshDetail(task.id);
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const action = async (kind: "end" | "cancel" | "resume") => {
     if (!task) return;
     setSubmitting(true);
     try {
-      if (kind === "stop") await api.stopTeamTask(task.id);
+      if (kind === "end") await api.stopTeamTask(task.id);
+      else if (kind === "cancel") await api.cancelTeamRequest(task.id);
       else await api.resumeTeamTask(task.id);
       await Promise.all([refreshDetail(task.id), refreshTasks(), onAgentsChanged()]);
     } catch (reason) {
@@ -268,41 +291,25 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
   const workingName = agentMap.get(task?.currentAgentId ?? "")?.name ?? "The team";
   const showForm = !openTask && (!task || terminalStatuses.has(task.status));
   const formReady = showForm && !openTask && readyAgents.length >= 2;
-  const finalMessage =
-    task?.status === "completed" && task.completionSummary
-      ? { name: agentMap.get(task.leadAgentId)?.name ?? "Lead", body: task.completionSummary }
-      : null;
-
-  /**
-   * The chat is built from the same event log the Activity panel shows, so
-   * whatever the team actually did is what a reader sees — no separate
-   * transcript that can drift.
-   *
-   * Every Agent turn becomes a bubble in both coordination modes. Handoffs and
-   * policy decisions become compact one-line notes, so the reason work stopped
-   * or resumed is visible in the conversation rather than buried in the log.
-   */
+  /** Keep the primary chat focused on user requests and delivered contributions. */
   const conversation = useMemo<ChatEntry[]>(() => {
     const entries: ChatEntry[] = [];
+    if (task && !events.some((item) => item.type === "user_message")) {
+      entries.push({ kind: "user", id: `legacy-${task.id}`, body: task.objective, at: task.createdAt });
+    }
     for (const item of events) {
       const name = item.agentId ? agentMap.get(item.agentId)?.name ?? "Agent" : "System";
       switch (item.type) {
-        case "coordination_plan":
-          entries.push({ kind: "note", id: item.id, tone: "info", at: item.createdAt, body: item.content });
-          break;
-        case "lead_decision":
-          if (item.content.trim()) {
-            entries.push({ kind: "agent", id: item.id, name, role: "Lead", at: item.createdAt, body: item.content });
-          }
-          break;
-        case "delegated":
+        case "user_message":
           entries.push({
-            kind: "note",
+            kind: "user",
             id: item.id,
-            tone: "info",
-            at: item.createdAt,
             body: item.content,
-            detail: item.assignment,
+            resourceName:
+              typeof item.statePatch?.resourceName === "string"
+                ? item.statePatch.resourceName
+                : undefined,
+            at: item.createdAt,
           });
           break;
         case "specialist_result":
@@ -314,30 +321,13 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
             body: item.chatContent ?? item.content,
           });
           break;
-        case "resource_authorization":
+        case "request_completed":
+        case "task_completed":
           entries.push({
-            kind: "note",
+            kind: "agent",
             id: item.id,
-            tone: item.content.startsWith("DENY") ? "deny" : "allow",
-            at: item.createdAt,
-            body: item.content,
-          });
-          break;
-        case "task_access_granted":
-          entries.push({ kind: "note", id: item.id, tone: "allow", at: item.createdAt, body: item.content });
-          break;
-        case "task_access_revoked":
-          entries.push({ kind: "note", id: item.id, tone: "info", at: item.createdAt, body: item.content });
-          break;
-        case "turn_retry":
-        case "turn_failed":
-        case "task_paused":
-        case "task_resumed":
-        case "task_stopped":
-          entries.push({
-            kind: "note",
-            id: item.id,
-            tone: item.type === "task_resumed" ? "info" : "deny",
+            name: agentMap.get(task?.leadAgentId ?? "")?.name ?? name,
+            role: "Final answer",
             at: item.createdAt,
             body: item.content,
           });
@@ -347,7 +337,7 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
       }
     }
     return entries;
-  }, [events, agentMap]);
+  }, [events, agentMap, task]);
 
   return (
     <section className="team-view">
@@ -363,7 +353,7 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
             <button
               className="button button-danger"
               disabled={submitting}
-              onClick={() => void action("stop")}
+              onClick={() => void action("cancel")}
             >
               Stop
             </button>
@@ -380,15 +370,20 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
               <button
                 className="button button-ghost"
                 disabled={submitting}
-                onClick={() => void action("stop")}
+                onClick={() => void action("cancel")}
               >
-                Stop
+                Cancel request
               </button>
             </>
           )}
           {!openTask && task && terminalStatuses.has(task.status) && (
             <button className="button button-primary" onClick={startNewTask}>
-              New task
+              New team
+            </button>
+          )}
+          {task && ["ready", "running", "paused"].includes(task.status) && (
+            <button className="button button-ghost" disabled={submitting} onClick={() => void action("end")}>
+              End team
             </button>
           )}
         </div>
@@ -568,7 +563,7 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
               <div className="team-panel-body">
                 {openTask ? (
                   <div className="team-note">
-                    <p>A task is already running. Stop or finish it before starting another.</p>
+                    <p>A team conversation is active. End it before creating another team.</p>
                     <button
                       type="button"
                       className="button button-ghost"
@@ -591,7 +586,7 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
 
           {task && (
             <details className="team-panel">
-              <summary>This task</summary>
+              <summary>Team members</summary>
               <div className="team-panel-body">
                 <p className="team-mode">{modeText(task)}</p>
                 {task.resourceId && (
@@ -702,7 +697,7 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
 
           {tasks.length > 0 && (
             <details className="team-panel">
-              <summary>History</summary>
+              <summary>Conversations</summary>
               <div className="team-panel-body team-history">
                 {tasks.map((item) => (
                   <button
@@ -734,29 +729,23 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
           ) : (
             <>
               <div className="team-chat-head" title={task.objective}>
-                {oneLine(task.objective)}
+                {task.status === "ready" ? "Ready for your next task" : oneLine(task.objective)}
               </div>
               <div className="team-chat" aria-label="Team conversation">
-                <article className="team-message team-message-objective">
-                  <div className="team-avatar" aria-hidden="true">
-                    Y
-                  </div>
-                  <div className="team-message-body">
-                    <div className="team-message-meta">
-                      <strong>You</strong>
-                      <time>{time(task.createdAt)}</time>
-                    </div>
-                    <div className="team-bubble">
-                      <MarkdownContent>{task.objective}</MarkdownContent>
-                    </div>
-                  </div>
-                </article>
-
-                {/* Every Agent turn appears here in both coordination modes; handoffs
-                    and policy decisions appear as short notes so the reader can follow
-                    why the team did what it did. */}
                 {conversation.map((entry) =>
-                  entry.kind === "agent" ? (
+                  entry.kind === "user" ? (
+                    <article className="team-message team-message-objective" key={entry.id}>
+                      <div className="team-avatar" aria-hidden="true">Y</div>
+                      <div className="team-message-body">
+                        <div className="team-message-meta">
+                          <strong>You</strong>
+                          {entry.resourceName && <span>{entry.resourceName}</span>}
+                          <time>{time(entry.at)}</time>
+                        </div>
+                        <div className="team-bubble"><MarkdownContent>{entry.body}</MarkdownContent></div>
+                      </div>
+                    </article>
+                  ) : (
                     <article className="team-message" key={entry.id}>
                       <div className="team-avatar" aria-hidden="true">
                         {initials(entry.name)}
@@ -772,18 +761,6 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                         </div>
                       </div>
                     </article>
-                  ) : (
-                    <div className={`team-system-entry team-note-${entry.tone}`} key={entry.id}>
-                      <div className="team-system-message">
-                        <span aria-hidden="true">
-                          {entry.tone === "deny" ? "!" : entry.tone === "allow" ? "\u2713" : "\u00b7"}
-                        </span>
-                        <span>
-                          {entry.body}
-                          {entry.detail && <em className="team-note-detail">{entry.detail}</em>}
-                        </span>
-                      </div>
-                    </div>
                   ),
                 )}
 
@@ -798,24 +775,6 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                         : "The team is working…"}
                     </small>
                   </div>
-                )}
-
-                {finalMessage && (
-                  <article className="team-message">
-                    <div className="team-avatar" aria-hidden="true">
-                      {initials(finalMessage.name)}
-                    </div>
-                    <div className="team-message-body">
-                      <div className="team-message-meta">
-                        <strong>{finalMessage.name}</strong>
-                        <span>Final answer</span>
-                        <time>{time(task.completedAt ?? task.updatedAt)}</time>
-                      </div>
-                      <div className="team-bubble">
-                        <MarkdownContent>{finalMessage.body}</MarkdownContent>
-                      </div>
-                    </div>
-                  </article>
                 )}
 
                 <div ref={conversationEnd} />
@@ -833,6 +792,54 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                     step {task.turnCount}
                   </span>
                 </div>
+              )}
+              {["ready", "running", "paused"].includes(task.status) && (
+                <form className="team-composer" onSubmit={sendTask}>
+                  <textarea
+                    ref={task.status === "ready" ? objectiveRef : undefined}
+                    rows={3}
+                    maxLength={20_000}
+                    value={objective}
+                    disabled={task.status !== "ready" || submitting}
+                    placeholder={
+                      task.status === "ready"
+                        ? "Give the team its next task…"
+                        : task.status === "paused"
+                          ? "Resume or cancel this request to continue…"
+                          : "The team is working…"
+                    }
+                    onChange={(event) => setObjective(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        event.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                  />
+                  <div className="team-composer-footer">
+                    <label>
+                      <span>Protected document</span>
+                      <select
+                        value={resourceId}
+                        disabled={task.status !== "ready" || submitting}
+                        onChange={(event) => setResourceId(event.target.value)}
+                      >
+                        <option value="">None</option>
+                        {resources.map((resource) => (
+                          <option key={resource.id} value={resource.id}>{resource.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <span className="team-composer-hint">Enter to send · Shift + Enter for newline</span>
+                    <button
+                      className="send-button"
+                      aria-label="Send task"
+                      disabled={task.status !== "ready" || submitting || !objective.trim()}
+                    >
+                      ↑
+                    </button>
+                  </div>
+                </form>
               )}
             </>
           )}

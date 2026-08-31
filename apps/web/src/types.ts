@@ -137,7 +137,7 @@ export interface SystemInfo {
 }
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-export type TeamTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
+export type TeamTaskStatus = "ready" | "running" | "paused" | "completed" | "failed" | "stopped";
 export type TeamTaskTurnPolicy = "facilitated" | "sequential";
 export type TeamAgentSelection = "user" | "lead";
 export type TeamResourceAccessMode = "manual" | "task";
@@ -157,8 +157,10 @@ export interface TeamTask {
   resourceAccessMode: TeamResourceAccessMode;
   specialistAgentIds: string[];
   agentSelection: TeamAgentSelection;
+  rosterLocked: boolean;
   turnPolicy: TeamTaskTurnPolicy | null;
   status: TeamTaskStatus;
+  activeRequestSequence: number | null;
   workspacePath: string;
   currentAgentId: string | null;
   currentAssignment: string | null;

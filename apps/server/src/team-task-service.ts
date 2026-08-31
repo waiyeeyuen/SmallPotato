@@ -15,6 +15,7 @@ import type {
   RequestActor,
   RunnerMount,
   RunnerResult,
+  TeamResourceAccessMode,
   TeamTask,
   TeamTaskEvent,
   TeamTaskEventType,
@@ -143,25 +144,33 @@ export class TeamTaskService {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  getTask(id: string): TeamTask {
+  getTask(actor: RequestActor, id: string): TeamTask {
+    const task = this.getTaskInternal(id);
+    this.requireTaskOwner(actor, task);
+    return task;
+  }
+
+  private getTaskInternal(id: string): TeamTask {
     const task = this.store.snapshot().teamTasks.find((item) => item.id === id);
     if (!task) throw new HttpError(404, "Team Task not found");
     return task;
   }
 
   /**
-   * Load a task only if the actor owns it. The route boundary calls this before
-   * returning a task, its events, or mutating it — a task started by another user
-   * must be invisible (404, not 403, so its existence never leaks).
+   * Load a task only if the actor owns it — a task started by another user must
+   * be invisible (404, not 403, so its existence never leaks). Alias of
+   * `getTask(actor, id)`, kept for call sites that read as an assertion.
    */
   assertTaskOwner(actor: RequestActor, id: string): TeamTask {
-    const task = this.getTask(id);
-    if (task.ownerUserId !== actor.userId) throw new HttpError(404, "Team Task not found");
-    return task;
+    return this.getTask(actor, id);
   }
 
-  getEvents(taskId: string): TeamTaskEvent[] {
-    this.getTask(taskId);
+  getEvents(actor: RequestActor, taskId: string): TeamTaskEvent[] {
+    this.getTask(actor, taskId);
+    return this.eventsForTask(taskId);
+  }
+
+  private eventsForTask(taskId: string): TeamTaskEvent[] {
     return this.store
       .snapshot()
       .teamTaskEvents.filter((event) => event.taskId === taskId)
@@ -209,6 +218,22 @@ export class TeamTaskService {
       input.objective,
       input.resourceId ?? null,
     );
+    // Task-scoped capability leases can only be minted for a resource the actor
+    // owns. A resource shared in from another user always falls back to "manual"
+    // (the cross-user share itself is the authorization — see
+    // SecurityService.authorizeResourceRead).
+    const ownsRequiredResource = requiredResource
+      ? this.security
+          .listResources(actor)
+          .find((item) => item.id === requiredResource.resourceId)?.ownedByCurrentUser ?? false
+      : false;
+    // Deny-by-default: an unqualified attach is "manual" (every specialist must
+    // already be authorized). "task" — auto-issued task-scoped leases for the
+    // roster — is an explicit opt-in, and only for a resource the actor owns.
+    const resourceAccessMode: TeamResourceAccessMode =
+      requiredResource && ownsRequiredResource
+        ? input.resourceAccessMode ?? "manual"
+        : "manual";
     if (requiredResource && agentSelection === "lead") {
       throw new HttpError(
         400,
@@ -226,6 +251,7 @@ export class TeamTaskService {
       objective: input.objective.trim(),
       leadAgentId: input.leadAgentId,
       resourceId: requiredResource?.resourceId ?? null,
+      resourceAccessMode,
       specialistAgentIds: specialistIds,
       agentSelection,
       turnPolicy: null,
@@ -247,28 +273,41 @@ export class TeamTaskService {
       completedAt: null,
     };
 
-    if (this.store.snapshot().teamTasks.some((item) => ["running", "paused"].includes(item.status))) {
+    if (this.store.snapshot().teamTasks.some(
+      (item) => item.ownerUserId === actor.userId && ["running", "paused"].includes(item.status),
+    )) {
       throw new HttpError(409, "Finish or stop the existing Team Task first");
     }
     this.validateAvailableAgents(actor, participantIds);
-    if (requiredResource) {
+    // Manual mode: every specialist must already be authorized (an owner's
+    // capability lease, or a cross-user share) before anything is provisioned —
+    // the first denial aborts the task with nothing created. Task mode instead
+    // mints task-scoped leases below (issueTaskAccess) for a resource the actor
+    // owns, so the pre-flight would be redundant there.
+    if (requiredResource && resourceAccessMode === "manual") {
       await this.preflightResourceAccess(actor, requiredResource.resourceId, specialistIds);
     }
     await this.workspaces.createTeamTaskWorkspace(task);
     await this.store.mutate((database) => {
-      if (database.teamTasks.some((item) => ["running", "paused"].includes(item.status))) {
+      if (database.teamTasks.some(
+        (item) => item.ownerUserId === actor.userId && ["running", "paused"].includes(item.status),
+      )) {
         throw new HttpError(409, "Finish or stop the existing Team Task first");
       }
       this.reserveAgents(database, task);
       database.teamTasks.push(task);
       this.addEvent(database, task, "task_started", null, "Team Task started");
     });
+    if (task.resourceId && task.resourceAccessMode === "task" && agentSelection === "user") {
+      await this.issueTaskAccess(task);
+    }
     this.schedule(task.id);
     return task;
   }
 
-  async stopTask(id: string): Promise<TeamTask> {
-    const activeAgentId = this.getTask(id).currentAgentId;
+  async stopTask(actor: RequestActor, id: string): Promise<TeamTask> {
+    const current = this.getTask(actor, id);
+    const activeAgentId = current.currentAgentId;
     const task = await this.store.mutate((database) => {
       const stored = this.findTask(database, id);
       if (!["running", "paused"].includes(stored.status)) {
@@ -287,14 +326,25 @@ export class TeamTaskService {
     });
     if (activeAgentId) await this.runner.cancel(activeAgentId);
     await this.activeExecutions.get(id)?.catch(() => undefined);
+    await this.revokeTaskAccess(task);
     return task;
   }
 
-  async resumeTask(id: string): Promise<TeamTask> {
+  async resumeTask(actor: RequestActor, id: string): Promise<TeamTask> {
+    const paused = this.getTask(actor, id);
+    if (
+      paused.resourceId
+      && paused.resourceAccessMode === "task"
+      && (paused.agentSelection === "user" || paused.turnPolicy !== null)
+    ) {
+      await this.issueTaskAccess(paused);
+    }
     const task = await this.store.mutate((database) => {
       const stored = this.findTask(database, id);
       if (stored.status !== "paused") throw new HttpError(409, "Only a paused Team Task can resume");
-      if (database.teamTasks.some((item) => item.id !== id && item.status === "running")) {
+      if (database.teamTasks.some(
+        (item) => item.id !== id && item.ownerUserId === actor.userId && item.status === "running",
+      )) {
         throw new HttpError(409, "Another Team Task is already running");
       }
       this.reserveAgents(database, stored);
@@ -324,7 +374,7 @@ export class TeamTaskService {
 
   private async runLoop(taskId: string): Promise<void> {
     while (true) {
-      const task = this.getTask(taskId);
+      const task = this.getTaskInternal(taskId);
       if (task.status !== "running" || !task.currentAgentId) return;
       if (task.turnCount >= task.maxTurns) {
         await this.failTask(taskId, `The Team Task reached its ${task.maxTurns}-turn safety limit`);
@@ -353,7 +403,7 @@ export class TeamTaskService {
   } | null> {
     let lastError = "Agent turn failed";
     for (let attempt = 1; attempt <= 2; attempt += 1) {
-      const task = this.getTask(initialTask.id);
+      const task = this.getTaskInternal(initialTask.id);
       if (task.status !== "running") return null;
       if (task.turnCount >= task.maxTurns) {
         await this.failTask(task.id, `The Team Task reached its ${task.maxTurns}-turn safety limit`);
@@ -439,12 +489,20 @@ export class TeamTaskService {
         return { result, decision, specialistResult };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
-        if (this.getTask(task.id).status !== "running") return null;
-        if (attempt === 1 && this.getTask(task.id).turnCount < task.maxTurns) {
+        if (this.getTaskInternal(task.id).status !== "running") return null;
+        if (attempt === 1 && this.getTaskInternal(task.id).turnCount < task.maxTurns) {
           await this.store.mutate((database) => {
             const stored = this.findTask(database, task.id);
             this.addEvent(database, stored, "turn_retry", agent.id, lastError, stored.currentAssignment, attempt + 1);
           });
+          if (/\b429\b|too many requests|rate[ -]?limit/i.test(lastError)) {
+            // Ark may reject an immediate retry in the same provider window.
+            // Keep unit tests fast while giving the real Runtime a useful cooldown.
+            const cooldownMs = this.config.nodeEnv === "test" ? 0 : 15_000;
+            if (cooldownMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, cooldownMs));
+            }
+          }
         }
       }
     }
@@ -473,8 +531,9 @@ export class TeamTaskService {
     result: RunnerResult,
     response: LeadDecision,
   ): Promise<void> {
-    await this.store.mutate((database) => {
+    const outcome = await this.store.mutate((database) => {
       const task = this.findRunningTask(database, taskId, leadAgentId);
+      let rosterCommitted = false;
       task.activeTurnStartedAt = null;
       task.threadIds[leadAgentId] = result.threadId;
       Object.assign(task.sharedState, response.statePatch);
@@ -488,6 +547,7 @@ export class TeamTaskService {
           task.specialistAgentIds = roster;
           this.releaseAgentsExcept(database, task, roster);
         }
+        rosterCommitted = true;
         const rosterNames = task.specialistAgentIds
           .map((id) => database.agents.find((item) => item.id === id)?.name ?? "Unknown Agent")
           .join(", ");
@@ -512,7 +572,7 @@ export class TeamTaskService {
         task.updatedAt = task.completedAt;
         this.addEvent(database, task, "task_completed", leadAgentId, response.decision.summary);
         this.releaseAgents(database, task);
-        return;
+        return { task: structuredClone(task), rosterCommitted, completed: true };
       }
       const delegation = response.decision;
       const nextAgentId = task.turnPolicy === "sequential"
@@ -534,7 +594,16 @@ export class TeamTaskService {
           : "Selected " + (specialist?.name ?? "the specialist")) + " for the next collaborative turn.",
         delegation.assignment,
       );
+      return { task: structuredClone(task), rosterCommitted, completed: false };
     });
+    if (
+      outcome.rosterCommitted &&
+      outcome.task.resourceId &&
+      outcome.task.resourceAccessMode === "task"
+    ) {
+      await this.issueTaskAccess(outcome.task);
+    }
+    if (outcome.completed) await this.revokeTaskAccess(outcome.task);
   }
 
   private async applySpecialistResult(
@@ -992,8 +1061,8 @@ export class TeamTaskService {
    * link still matches — the same tamper-evidence guarantee the authorization
    * receipt chain provides, surfaced for orchestration evidence.
    */
-  verifyEventChain(taskId: string): boolean {
-    this.getTask(taskId);
+  verifyEventChain(actor: RequestActor, taskId: string): boolean {
+    this.getTask(actor, taskId);
     const events = this.store
       .snapshot()
       .teamTaskEvents.filter((event) => event.taskId === taskId)
@@ -1023,6 +1092,49 @@ export class TeamTaskService {
     const user = this.store.snapshot().users.find((item) => item.id === task.ownerUserId);
     if (!user) throw new HttpError(409, "The Team Task owner no longer exists");
     return { userId: user.id, username: user.username, displayName: user.displayName };
+  }
+
+  private requireTaskOwner(actor: RequestActor, task: TeamTask): void {
+    if (task.ownerUserId !== actor.userId) throw new HttpError(404, "Team Task not found");
+  }
+
+  private async issueTaskAccess(task: TeamTask): Promise<void> {
+    if (!task.resourceId || task.resourceAccessMode !== "task") return;
+    const actor = this.actorForTask(task);
+    const agents = task.specialistAgentIds.map((id) => this.getAgent(id));
+    const { grants, issuedCount } = await this.security.ensureTaskGrants(
+      actor,
+      agents,
+      task.resourceId,
+      task.id,
+    );
+    if (issuedCount === 0) return;
+    await this.store.mutate((database) => {
+      const stored = this.findTask(database, task.id);
+      const names = agents.map((agent) => agent.name).join(", ");
+      this.addEvent(
+        database,
+        stored,
+        "task_access_granted",
+        null,
+        `Task-scoped read access active for ${grants.length} specialist${grants.length === 1 ? "" : "s"}: ${names}. Access expires automatically and is revoked when the task ends.`,
+      );
+    });
+  }
+
+  private async revokeTaskAccess(task: TeamTask): Promise<void> {
+    const revoked = await this.security.revokeTaskGrants(task.id);
+    if (revoked < 1) return;
+    await this.store.mutate((database) => {
+      const stored = this.findTask(database, task.id);
+      this.addEvent(
+        database,
+        stored,
+        "task_access_revoked",
+        null,
+        `Revoked ${revoked} task-scoped capability lease${revoked === 1 ? "" : "s"}.`,
+      );
+    });
   }
 
   /**
@@ -1196,6 +1308,7 @@ export class TeamTaskService {
       this.actorForTask(task),
       agent,
       resourceId,
+      { teamTaskId: task.id },
     );
     const receipt = (decision.receiptHash ?? decision.id).slice(0, 8);
 
@@ -1258,9 +1371,9 @@ export class TeamTaskService {
   }
 
   private async failTask(id: string, reason: string): Promise<void> {
-    await this.store.mutate((database) => {
+    const task = await this.store.mutate((database) => {
       const task = this.findTask(database, id);
-      if (task.status !== "running") return;
+      if (task.status !== "running") return structuredClone(task);
       task.status = "failed";
       task.currentAgentId = null;
       task.currentAssignment = null;
@@ -1271,7 +1384,9 @@ export class TeamTaskService {
       task.updatedAt = task.completedAt;
       this.releaseAgents(database, task);
       this.addEvent(database, task, "turn_failed", null, reason);
+      return structuredClone(task);
     });
+    await this.revokeTaskAccess(task);
   }
 
   private async pauseUnexpectedly(id: string, reason: string): Promise<void> {

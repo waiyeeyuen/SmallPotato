@@ -28,6 +28,7 @@ class ScriptedRunner implements AgentRunner {
 
 const temporaryDirectories: string[] = [];
 const actor = { userId: "user-alice", username: "alice", displayName: "Alice Tan" };
+const bob = { userId: "user-bob", username: "bob", displayName: "Bob Lim" };
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -110,6 +111,36 @@ const planSequential = (
 });
 
 describe("TeamTaskService", () => {
+  it("isolates Team Task data and controls by signed-in user", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Alice Lead" });
+    const specialistAgent = await agents.createAgent(actor, { name: "Alice Specialist" });
+    runner.script.push(
+      planFacilitated(specialistAgent.id, "Contribute"),
+      specialist("Alice-only result"),
+      complete("Alice-only task complete"),
+    );
+    const task = await teamTasks.createTask(actor, {
+      objective: "Alice private coordination",
+      leadAgentId: lead.id,
+      specialistAgentIds: [specialistAgent.id],
+    });
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+
+    expect(teamTasks.listTasks(bob)).toEqual([]);
+    expect(() => teamTasks.getTask(bob, task.id)).toThrowError();
+    expect(() => teamTasks.getEvents(bob, task.id)).toThrowError();
+    expect(() => teamTasks.verifyEventChain(bob, task.id)).toThrowError();
+    await expect(teamTasks.stopTask(bob, task.id)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(teamTasks.resumeTask(bob, task.id)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(teamTasks.createTask(bob, {
+      objective: "Try to coordinate Alice's Agents",
+      leadAgentId: lead.id,
+      specialistAgentIds: [specialistAgent.id],
+    })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
   it("pauses an interrupted task on startup and releases its Agents", async () => {
     let rejectRun!: (reason: Error) => void;
     const requests: RunnerRequest[] = [];
@@ -129,9 +160,9 @@ describe("TeamTaskService", () => {
 
     const recovered = new TeamTaskService(config, store, workspaces, runner, security);
     await recovered.initialize();
-    expect(recovered.getTask(task.id)).toMatchObject({ status: "paused", currentAgentId: null });
+    expect(recovered.getTask(actor, task.id)).toMatchObject({ status: "paused", currentAgentId: null });
     expect(agents.getAgent(actor, lead.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
-    expect(recovered.getEvents(task.id).at(-1)?.type).toBe("task_paused");
+    expect(recovered.getEvents(actor, task.id).at(-1)?.type).toBe("task_paused");
     await runner.cancel(lead.id);
   });
 
@@ -153,8 +184,8 @@ describe("TeamTaskService", () => {
     await expect.poll(() => requests.length).toBe(1);
     expect(agents.getAgent(actor, lead.id)).toMatchObject({ status: "busy", activeTeamTaskId: task.id });
     await expect(agents.sendMessage(actor, specialist.id, "conflicting work")).rejects.toMatchObject({ statusCode: 409 });
-    await teamTasks.stopTask(task.id);
-    expect(teamTasks.getTask(task.id).status).toBe("stopped");
+    await teamTasks.stopTask(actor, task.id);
+    expect(teamTasks.getTask(actor, task.id).status).toBe("stopped");
     expect(agents.getAgent(actor, lead.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
     expect(agents.getAgent(actor, specialist.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
   });
@@ -178,9 +209,9 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [builder.id, reviewer.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
 
-    const finished = teamTasks.getTask(task.id);
+    const finished = teamTasks.getTask(actor, task.id);
     expect(finished.completionSummary).toContain("built, tested, and reviewed");
     expect(runner.requests.map((request) => request.agentId)).toEqual([
       lead.id, builder.id, lead.id, reviewer.id, lead.id,
@@ -191,12 +222,12 @@ describe("TeamTaskService", () => {
     expect(agents.getAgent(actor, lead.id).codexThreadId).toBeNull();
     expect(agents.getAgent(actor, builder.id).activeTeamTaskId).toBeNull();
     // Same 14 events as before plus one coordination_plan on the Lead's first turn.
-    expect(teamTasks.getEvents(task.id).map((event) => event.sequence)).toEqual(
+    expect(teamTasks.getEvents(actor, task.id).map((event) => event.sequence)).toEqual(
       Array.from({ length: 15 }, (_, index) => index + 1),
     );
-    expect(teamTasks.getEvents(task.id).filter((event) => event.type === "turn_started"))
+    expect(teamTasks.getEvents(actor, task.id).filter((event) => event.type === "turn_started"))
       .toHaveLength(5);
-    expect(teamTasks.getEvents(task.id).filter((event) => event.type === "coordination_plan"))
+    expect(teamTasks.getEvents(actor, task.id).filter((event) => event.type === "coordination_plan"))
       .toHaveLength(1);
   });
 
@@ -220,7 +251,7 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [engineer.id, stylist.id, critic.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
 
     expect(runner.requests.map((request) => request.agentId)).toEqual([
       lead.id,
@@ -232,12 +263,12 @@ describe("TeamTaskService", () => {
     expect(runner.requests[2]?.prompt).toContain("Wear red when you want energy and visibility");
     expect(runner.requests[3]?.prompt).toContain("Wear red when you want energy and visibility");
     expect(runner.requests[3]?.prompt).toContain("Stylist (Specialist)");
-    expect(teamTasks.getTask(task.id)).toMatchObject({
+    expect(teamTasks.getTask(actor, task.id)).toMatchObject({
       assignmentQueue: [],
       activeTurnStartedAt: null,
       completionSummary: "Wear red for a bold social setting; otherwise choose black for adaptable confidence.",
     });
-    expect(teamTasks.getEvents(task.id).filter((event) => event.type === "delegated"))
+    expect(teamTasks.getEvents(actor, task.id).filter((event) => event.type === "delegated"))
       .toHaveLength(2);
   });
 
@@ -256,7 +287,7 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [specialistAgent.id],
     });
-    await expect.poll(() => teamTasks.getTask(first.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, first.id).status).toBe("completed");
 
     runner.script.push(
       planFacilitated(specialistAgent.id, "Complete the second task"),
@@ -268,7 +299,7 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [specialistAgent.id],
     });
-    await expect.poll(() => teamTasks.getTask(second.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, second.id).status).toBe("completed");
     expect(second.id).not.toBe(first.id);
     expect(teamTasks.listTasks(actor)).toHaveLength(2);
   });
@@ -289,7 +320,7 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [specialistAgent.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
 
     // Bob cannot see or touch Alice's task or its transcript. The stop/resume
     // routes gate on this same check before mutating.
@@ -326,8 +357,8 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [specialistAgent.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
-    const types = teamTasks.getEvents(task.id).map((event) => event.type);
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+    const types = teamTasks.getEvents(actor, task.id).map((event) => event.type);
     expect(types).toContain("turn_retry");
     expect(types).toContain("turn_failed");
     expect(runner.requests.map((request) => request.agentId)).toEqual([
@@ -358,12 +389,12 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [first.id, second.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
 
     expect(runner.requests.map((request) => request.agentId)).toEqual([
       lead.id, first.id, first.id, lead.id, lead.id, second.id, lead.id, first.id, lead.id,
     ]);
-    expect(teamTasks.getEvents(task.id)).toEqual(expect.arrayContaining([
+    expect(teamTasks.getEvents(actor, task.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: "turn_retry",
         content: "Lead cannot complete the Team Task before 2 distinct specialists have contributed",
@@ -394,7 +425,7 @@ describe("TeamTaskService", () => {
 
     const recovered = new TeamTaskService(config, store, workspaces, runner, security);
     await recovered.initialize();
-    expect(recovered.getTask(task.id).status).toBe("paused");
+    expect(recovered.getTask(actor, task.id).status).toBe("paused");
     releaseInterruptedLead(delegate(second.id, "Discarded interrupted assignment"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -403,8 +434,8 @@ describe("TeamTaskService", () => {
       specialist("Second contribution complete."),
       complete("Both contributions completed in order."),
     );
-    await recovered.resumeTask(task.id);
-    await expect.poll(() => recovered.getTask(task.id).status).toBe("completed");
+    await recovered.resumeTask(actor, task.id);
+    await expect.poll(() => recovered.getTask(actor, task.id).status).toBe("completed");
 
     expect(runner.requests.map((request) => request.agentId)).toEqual([
       lead.id, first.id, lead.id, lead.id, second.id, lead.id,
@@ -437,9 +468,9 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [counterA.id, counterB.id, counterC.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
 
-    const allEvents = teamTasks.getEvents(task.id);
+    const allEvents = teamTasks.getEvents(actor, task.id);
     const specialistEvents = allEvents.filter((event) => event.type === "specialist_result");
     const outputs = specialistEvents.map((event) => Number(event.chatContent));
 
@@ -469,8 +500,8 @@ describe("TeamTaskService", () => {
     ]);
 
     // The run terminated on its own (no infinite loop) well under the safety cap.
-    expect(teamTasks.getTask(task.id).turnCount).toBe(21);
-    expect(teamTasks.getTask(task.id).sharedState.currentNumber).toBe(1);
+    expect(teamTasks.getTask(actor, task.id).turnCount).toBe(21);
+    expect(teamTasks.getTask(actor, task.id).sharedState.currentNumber).toBe(1);
 
     // First specialist contribution is the sequence's starting value, not 9.
     expect(outputs[0]).toBe(10);
@@ -483,7 +514,7 @@ describe("TeamTaskService", () => {
     expect(runner.requests[2]?.prompt).toContain("coordinating a turn-by-turn sequential task");
     expect(runner.requests[2]?.prompt).toContain("rotates through the specialist pool in the fixed order");
     expect(runner.requests[2]?.prompt).toContain("Conversation message: 10");
-    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+    expect(teamTasks.verifyEventChain(actor, task.id)).toBe(true);
   });
 
   it("generalises the sequential policy to a different range and two agents", async () => {
@@ -506,8 +537,8 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [first.id, second.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
-    const specialistEvents = teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+    const specialistEvents = teamTasks.getEvents(actor, task.id).filter((event) => event.type === "specialist_result");
     expect(specialistEvents.map((event) => Number(event.chatContent))).toEqual([20, 19, 18, 17, 16, 15]);
     expect(specialistEvents.map((event) => event.agentId)).toEqual([
       first.id, second.id, first.id, second.id, first.id, second.id,
@@ -541,16 +572,16 @@ describe("TeamTaskService", () => {
       specialistAgentIds: [counterA.id, counterB.id],
       turnPolicy: "sequential",
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
-    const types = teamTasks.getEvents(task.id).map((event) => event.type);
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+    const types = teamTasks.getEvents(actor, task.id).map((event) => event.type);
     expect(types).toContain("turn_retry");
     expect(types).toContain("turn_failed");
-    const outputs = teamTasks.getEvents(task.id)
+    const outputs = teamTasks.getEvents(actor, task.id)
       .filter((event) => event.type === "specialist_result")
       .map((event) => Number(event.chatContent));
     expect(outputs).toEqual([4, 3, 2, 1]);
-    expect(teamTasks.getTask(task.id).sharedState.currentNumber).toBe(1);
-    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+    expect(teamTasks.getTask(actor, task.id).sharedState.currentNumber).toBe(1);
+    expect(teamTasks.verifyEventChain(actor, task.id)).toBe(true);
   });
 
   it("lets the Lead delegate open-ended work to relevant specialists under the facilitated policy", async () => {
@@ -574,15 +605,15 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [venue.id, catering.id, budget.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
-    expect(teamTasks.getTask(task.id).turnPolicy).toBe("facilitated");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+    expect(teamTasks.getTask(actor, task.id).turnPolicy).toBe("facilitated");
     expect(runner.requests.map((request) => request.agentId)).toEqual([
       lead.id, venue.id, lead.id, catering.id, lead.id, budget.id, lead.id,
     ]);
-    expect(teamTasks.getTask(task.id).completionSummary).toContain("under budget");
+    expect(teamTasks.getTask(actor, task.id).completionSummary).toContain("under budget");
     expect(runner.requests[0]?.prompt).toContain("This is your first turn as Lead");
     expect(runner.requests[2]?.prompt).toContain("dynamic conversation facilitator");
-    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+    expect(teamTasks.verifyEventChain(actor, task.id)).toBe(true);
   });
 
   it("detects tampering in the coordination event hash-chain", async () => {
@@ -600,8 +631,8 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [specialistAgent.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
-    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+    expect(teamTasks.verifyEventChain(actor, task.id)).toBe(true);
 
     await store.mutate((database) => {
       const target = database.teamTaskEvents.find(
@@ -609,7 +640,7 @@ describe("TeamTaskService", () => {
       );
       if (target) target.chatContent = "Tampered.";
     });
-    expect(teamTasks.verifyEventChain(task.id)).toBe(false);
+    expect(teamTasks.verifyEventChain(actor, task.id)).toBe(false);
   });
 
   it("rejects a Lead selection outside the authorized specialist pool", async () => {
@@ -628,10 +659,10 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [selected.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("paused");
     // The retry between the two failures is steered with the exact pool.
-    expect(teamTasks.getTask(task.id).lastError).toContain("not one of your authorized specialists");
-    expect(teamTasks.getTask(task.id).lastError).toContain("Selected Specialist (id: " + selected.id + ")");
+    expect(teamTasks.getTask(actor, task.id).lastError).toContain("not one of your authorized specialists");
+    expect(teamTasks.getTask(actor, task.id).lastError).toContain("Selected Specialist (id: " + selected.id + ")");
     expect(runner.requests.map((request) => request.agentId)).toEqual([lead.id, lead.id]);
   });
 
@@ -655,12 +686,12 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [scout.id, budget.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
     // No pause, no wasted retry — the decorated name resolved on the first try.
     expect(runner.requests.map((request) => request.agentId)).toEqual([
       lead.id, scout.id, lead.id, budget.id, lead.id,
     ]);
-    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+    expect(teamTasks.verifyEventChain(actor, task.id)).toBe(true);
   });
 
   it("stops unnecessary collaboration after twelve specialist rounds", async () => {
@@ -688,13 +719,13 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [first.id, second.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
-    expect(teamTasks.getTask(task.id).lastError).toContain(
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("paused");
+    expect(teamTasks.getTask(actor, task.id).lastError).toContain(
       "collaboration round limit was reached",
     );
-    expect(teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result"))
+    expect(teamTasks.getEvents(actor, task.id).filter((event) => event.type === "specialist_result"))
       .toHaveLength(12);
-    expect(teamTasks.getTask(task.id).turnCount).toBe(26);
+    expect(teamTasks.getTask(actor, task.id).turnCount).toBe(26);
   });
 
   it("lets the Lead commit the coordination mode on its first turn and locks it", async () => {
@@ -723,12 +754,12 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [counterA.id, counterB.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
 
-    expect(teamTasks.getTask(task.id).turnPolicy).toBe("sequential");
-    expect(teamTasks.getEvents(task.id).filter((event) => event.type === "coordination_plan"))
+    expect(teamTasks.getTask(actor, task.id).turnPolicy).toBe("sequential");
+    expect(teamTasks.getEvents(actor, task.id).filter((event) => event.type === "coordination_plan"))
       .toHaveLength(1);
-    const specialistEvents = teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result");
+    const specialistEvents = teamTasks.getEvents(actor, task.id).filter((event) => event.type === "specialist_result");
     expect(specialistEvents.map((event) => Number(event.chatContent))).toEqual([3, 2, 1]);
     // Rotation kept going even though a later turn tried to change modes.
     expect(specialistEvents.map((event) => event.agentId)).toEqual([counterA.id, counterB.id, counterA.id]);
@@ -757,13 +788,13 @@ describe("TeamTaskService", () => {
     // Every ready Agent is reserved up front.
     expect(agents.getAgent(actor, unused.id)).toMatchObject({ status: "busy", activeTeamTaskId: task.id });
 
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
 
     // The Lead's roster is now the task's specialist list; the unused Agent was released.
-    expect(teamTasks.getTask(task.id).specialistAgentIds).toEqual([used.id, alsoUsed.id]);
+    expect(teamTasks.getTask(actor, task.id).specialistAgentIds).toEqual([used.id, alsoUsed.id]);
     expect(agents.getAgent(actor, unused.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
     expect(agents.getAgent(actor, used.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
-    const planEvent = teamTasks.getEvents(task.id).find((event) => event.type === "coordination_plan");
+    const planEvent = teamTasks.getEvents(actor, task.id).find((event) => event.type === "coordination_plan");
     expect(planEvent?.content).toContain("2 specialists");
   });
 
@@ -787,11 +818,11 @@ describe("TeamTaskService", () => {
       specialistAgentIds: [],
       agentSelection: "lead",
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
-    expect(teamTasks.getTask(task.id).specialistAgentIds).toEqual([alpha.id, bravo.id]);
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+    expect(teamTasks.getTask(actor, task.id).specialistAgentIds).toEqual([alpha.id, bravo.id]);
     expect(agents.getAgent(actor, spare.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
     expect(
-      teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result").map((event) => event.agentId),
+      teamTasks.getEvents(actor, task.id).filter((event) => event.type === "specialist_result").map((event) => event.agentId),
     ).toEqual([alpha.id, bravo.id]);
   });
 
@@ -818,10 +849,10 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [a.id, b.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
-    expect(teamTasks.getTask(task.id).turnPolicy).toBe("sequential");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+    expect(teamTasks.getTask(actor, task.id).turnPolicy).toBe("sequential");
     expect(
-      teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result").map((event) => Number(event.chatContent)),
+      teamTasks.getEvents(actor, task.id).filter((event) => event.type === "specialist_result").map((event) => Number(event.chatContent)),
     ).toEqual([2, 1]);
   });
 
@@ -845,9 +876,9 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [research.id, check.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
     expect(
-      teamTasks.getEvents(task.id).filter((event) => event.type === "specialist_result").map((event) => event.chatContent),
+      teamTasks.getEvents(actor, task.id).filter((event) => event.type === "specialist_result").map((event) => event.chatContent),
     ).toEqual(["3", "2", "1"]);
   });
 
@@ -868,8 +899,8 @@ describe("TeamTaskService", () => {
       leadAgentId: lead.id,
       specialistAgentIds: [a.id, b.id],
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
-    expect(teamTasks.getTask(task.id).lastError).toContain("first turn must include a coordination plan");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("paused");
+    expect(teamTasks.getTask(actor, task.id).lastError).toContain("first turn must include a coordination plan");
     expect(b.id).toBeDefined();
   });
 
@@ -894,8 +925,8 @@ describe("TeamTaskService", () => {
       specialistAgentIds: [],
       agentSelection: "lead",
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
-    expect(teamTasks.getTask(task.id).specialistAgentIds).toEqual([alpha.id, bravo.id]);
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+    expect(teamTasks.getTask(actor, task.id).specialistAgentIds).toEqual([alpha.id, bravo.id]);
     expect(agents.getAgent(actor, spare.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
   });
 
@@ -915,8 +946,8 @@ describe("TeamTaskService", () => {
       specialistAgentIds: [],
       agentSelection: "lead",
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
-    expect(teamTasks.getTask(task.id).lastError).toContain("at least 2 of these exact Agents");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("paused");
+    expect(teamTasks.getTask(actor, task.id).lastError).toContain("at least 2 of these exact Agents");
     expect(agents.getAgent(actor, b.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
   });
 
@@ -937,6 +968,7 @@ describe("TeamTaskService", () => {
         leadAgentId: lead.id,
         specialistAgentIds: [analyst.id],
         resourceId: resource.id,
+        resourceAccessMode: "manual",
       }),
     ).rejects.toMatchObject({
       statusCode: 403,
@@ -977,7 +1009,7 @@ describe("TeamTaskService", () => {
       specialistAgentIds: [analyst.id],
       resourceId: resource.id,
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
 
     const specialistRequest = runner.requests.find((request) => request.agentId === analyst.id);
     expect(specialistRequest?.mounts).toEqual([
@@ -986,9 +1018,56 @@ describe("TeamTaskService", () => {
     expect(specialistRequest?.prompt).toContain("/authorized-resources/" + resource.id + ".txt");
     // The Lead coordinates without the document, so delegation cannot widen access.
     expect(runner.requests.filter((request) => request.agentId === lead.id).every((request) => request.mounts === undefined)).toBe(true);
-    const allow = teamTasks.getEvents(task.id).find((event) => event.type === "resource_authorization");
+    const allow = teamTasks.getEvents(actor, task.id).find((event) => event.type === "resource_authorization");
     expect(allow?.content).toContain("ALLOW");
-    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+    expect(teamTasks.verifyEventChain(actor, task.id)).toBe(true);
+  });
+
+  it("automatically grants task-scoped read access and revokes it on completion", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+    const resource = await security.createResource(actor, {
+      name: "Travel Profile",
+      description: "Protected dates and budget",
+      content: "Dates: 14-18 September. Budget: SGD 2,800.",
+    });
+    runner.script.push(
+      planFacilitated(analyst.id, "Read the profile and propose a plan"),
+      specialist("The plan uses 14-18 September and stays within SGD 2,800."),
+      complete("A budget-aware September plan is ready."),
+    );
+
+    const task = await teamTasks.createTask(actor, {
+      objective: "Plan a trip from the protected profile",
+      leadAgentId: lead.id,
+      specialistAgentIds: [analyst.id],
+      resourceId: resource.id,
+      resourceAccessMode: "task",
+    });
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
+
+    const specialistRequest = runner.requests.find((request) => request.agentId === analyst.id);
+    expect(specialistRequest?.mounts).toEqual([
+      { sourcePath: expect.any(String), targetPath: `/authorized-resources/${resource.id}.txt`, readOnly: true },
+    ]);
+    const grants = security.listGrants(actor, agents.getAgent(actor, analyst.id));
+    expect(grants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "team_task", teamTaskId: task.id, state: "revoked" }),
+    ]));
+    const decision = security.listDecisions(actor, agents.getAgent(actor, analyst.id))[0];
+    expect(decision).toMatchObject({ outcome: "allow", teamTaskId: task.id });
+    const eventTypes = teamTasks.getEvents(actor, task.id).map((event) => event.type);
+    expect(eventTypes).toEqual(expect.arrayContaining([
+      "task_access_granted",
+      "resource_authorization",
+      "task_access_revoked",
+    ]));
+    expect(teamTasks.verifyEventChain(actor, task.id)).toBe(true);
+
+    const leaked = await security.authorizeResourceRead(actor, agents.getAgent(actor, analyst.id), resource.id);
+    expect(leaked.decision).toMatchObject({ outcome: "deny", reason: "GRANT_MISSING", teamTaskId: null });
   });
 
   it("authorizes a specialist turn against another user's resource via a cross-user share", async () => {
@@ -1030,12 +1109,12 @@ describe("TeamTaskService", () => {
       specialistAgentIds: [analyst.id],
       resourceId: resource.id,
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
     const specialistRequest = runner.requests.find((request) => request.agentId === analyst.id);
     expect(specialistRequest?.mounts).toEqual([
       { sourcePath: expect.any(String), targetPath: "/authorized-resources/" + resource.id + ".txt", readOnly: true },
     ]);
-    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+    expect(teamTasks.verifyEventChain(actor, task.id)).toBe(true);
   });
 
   it("stops before any hand-off when the objective names a protected resource the user cannot access", async () => {
@@ -1115,6 +1194,6 @@ describe("TeamTaskService", () => {
       specialistAgentIds: [analyst.id],
       resourceId: "resource-bob-partnerships-brief",
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("completed");
   });
 });

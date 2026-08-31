@@ -95,6 +95,8 @@ export interface PermissionGrant {
   resourceName: string;
   actions: "read"[];
   purpose: string;
+  source: "manual" | "team_task";
+  teamTaskId: string | null;
   grantedByUserId: string;
   createdAt: string;
   expiresAt: string;
@@ -117,6 +119,7 @@ export interface PolicyDecision {
   reason: string;
   grantId: string | null;
   runId: string | null;
+  teamTaskId: string | null;
   previousReceiptHash: string | null;
   receiptHash: string;
   createdAt: string;
@@ -137,6 +140,7 @@ export type JsonValue = string | number | boolean | null | JsonValue[] | { [key:
 export type TeamTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
 export type TeamTaskTurnPolicy = "facilitated" | "sequential";
 export type TeamAgentSelection = "user" | "lead";
+export type TeamResourceAccessMode = "manual" | "task";
 
 export interface TeamAssignment {
   id: string;
@@ -146,9 +150,11 @@ export interface TeamAssignment {
 
 export interface TeamTask {
   id: string;
+  ownerUserId: string;
   objective: string;
   leadAgentId: string;
   resourceId: string | null;
+  resourceAccessMode: TeamResourceAccessMode;
   specialistAgentIds: string[];
   agentSelection: TeamAgentSelection;
   turnPolicy: TeamTaskTurnPolicy | null;

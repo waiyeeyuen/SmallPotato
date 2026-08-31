@@ -803,7 +803,7 @@ export default function App() {
                     {grants.map((grant) => (
                       <article className={"lease-item lease-" + grant.state} key={grant.id}>
                         <span className="lease-state">{grant.state}</span>
-                        <div><strong>{grant.resourceName}</strong><p>{grant.purpose}</p><code>read · {shortId(grant.id)}</code></div>
+                        <div><strong>{grant.resourceName}</strong><p>{grant.purpose}</p><code>read · {grant.source === "team_task" ? "task-scoped" : "manual"} · {shortId(grant.id)}</code></div>
                         <div className="lease-actions"><span>{grant.state === "active" ? remaining(grant.expiresAt) : grant.state}</span>{grant.state === "active" && <button onClick={() => void revokeGrant(grant.id)} disabled={busy}>Revoke</button>}</div>
                       </article>
                     ))}
@@ -836,7 +836,7 @@ export default function App() {
                         <div>
                           <strong>{resource.name}</strong>
                           <p>{resource.description || "No description"}</p>
-                          <small>{resource.ownerName} · {Math.max(1, Math.ceil(resource.sizeBytes / 1024))} KB · {resource.isDemo ? "demo fixture" : "user-created"}</small>
+                          <small>{resource.ownerName} · {resource.ownedByCurrentUser || resource.sharedWithCurrentUser ? `${Math.max(1, Math.ceil(resource.sizeBytes / 1024))} KB` : "private metadata hidden"} · {resource.isDemo ? "demo fixture" : "user-created"}</small>
                           {!resource.ownedByCurrentUser && resource.sharedWithCurrentUser && (
                             <small className="resource-share-note">Shared with you by {resource.ownerName}{resource.shareExpiresAt ? " · " + remaining(resource.shareExpiresAt) : " · no expiry"} · your Agents may read it</small>
                           )}
@@ -914,7 +914,7 @@ export default function App() {
                     <article className="receipt-row" role="row" key={decision.id}>
                       <span><b className={"decision decision-" + decision.outcome}>{decision.outcome}</b><code>{shortId(decision.id)}</code><small>hash {shortId(decision.receiptHash)}</small></span>
                       <span><strong>{decision.humanName}</strong><code>{shortId(decision.agentPrincipalId)}</code></span>
-                      <span><strong>{decision.resourceName}</strong><small>{decision.action} · read-only</small></span>
+                      <span><strong>{decision.resourceName}</strong><small>{decision.action} · read-only{decision.teamTaskId ? " · Team Task" : ""}</small></span>
                       <span>{reasonLabels[decision.reason] ?? decision.reason}</span>
                       <span>{formatTime(decision.createdAt)}</span>
                     </article>

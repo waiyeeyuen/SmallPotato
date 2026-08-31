@@ -2,53 +2,61 @@
 
 ## Objective
 
-PotatoGuard proves that a human may own an Agent without giving that Agent all
-of the human's access. Every Agent has a distinct non-human principal and zero
-standing protected-resource privilege. A scoped capability lease must pass a
-server policy immediately before a protected file enters the Runtime.
+Human ownership, Agent data authority, and Lead delegation are separate. Every
+Agent has a distinct principal and no standing protected-resource privilege. A
+manual or task-bound capability must pass server policy immediately before a
+protected file enters a Runtime.
 
 ```mermaid
 flowchart LR
-  Browser["Browser<br/>no trusted identity fields"] -->|"HttpOnly session cookie"| Control["Fastify control plane<br/>resolves Alice or Bob"]
-  Control --> Ownership["Ownership check<br/>loads Agent principal"]
-  Ownership --> Policy{"Capability policy<br/>principal + read + resource + time"}
-  Policy -->|"Deny before execution"| Receipts["Hash-chained access receipts<br/>human + Agent + action + resource"]
-  Policy -->|"Allow active lease"| Vault["Server-side resource vault<br/>content never returned to browser"]
-  Vault -->|"One approved read-only mount"| Runtime["Disposable Agent Runtime<br/>Codex session and workspace"]
-  Runtime -->|"Agent result"| Control
-  Policy -->|"Record allow"| Receipts
-  Control -->|"UI result and CSV evidence"| Browser
+  Browser["Browser<br/>no trusted owner fields"] -->|"HttpOnly session"| Control["Fastify control plane"]
+  Control --> Ownership{"human owns Agent,<br/>task, and resource?"}
+  Ownership -->|deny| Evidence["hash-chained receipt"]
+  Ownership -->|allow| Coordinator["Team Task coordinator"]
+  Coordinator --> Lead["Lead<br/>coordination context only"]
+  Lead -->|"validated roster decision"| Coordinator
+  Coordinator --> Capability{"principal + read + resource<br/>+ task + time + revocation"}
+  Capability -->|deny before execution| Evidence
+  Capability -->|allow| Vault["server-side resource vault"]
+  Vault -->|"one read-only mount"| Runtime["disposable specialist Runtime"]
+  Runtime --> Coordinator
+  Capability -->|"allow receipt"| Evidence
+  Coordinator -->|"terminal auto-revoke"| Capability
 ```
 
 ## Trust boundaries and controls
 
 | Boundary | Trusted source | Enforcement |
 | --- | --- | --- |
-| Browser → control plane | Hashed server session identifies the human | Strict request schemas reject supplied `userId`/`ownerUserId`; HttpOnly, SameSite cookie |
-| Human → Agent | Stored Agent row identifies owner and principal | Foreign Agents return not found; every Agent gets a UUID principal |
-| Agent → protected resource | Stored lease and server time | Deny by default; exact principal, `read`, resource, expiry, and revocation checks |
-| Vault → Runtime | Successful policy decision | Only the approved server path is mounted, read-only, into the disposable container |
-| Decision → evidence | Server-created immutable attribution snapshot | Each receipt includes the previous receipt hash; verification detects modification |
+| Browser → control plane | Hashed server session | Strict schemas reject `userId` and `ownerUserId`; HttpOnly, SameSite cookie; Secure in production mode |
+| Human → Agent/task | Stored owner IDs | Foreign Agents and Team Tasks return 404; lists are owner-filtered |
+| Human → resource | Stored resource owner | External metadata is minimized; foreign grants and task attachment are denied |
+| Agent → resource | Stored capability and server time | Exact principal, `read`, resource, task context, expiry, and revocation checks; deny by default |
+| Vault → Runtime | Successful policy decision | Only one approved server path is mounted read-only for that turn |
+| Decision → evidence | Server attribution snapshot | Each receipt includes the previous receipt hash; mutation breaks verification |
 
-## State-changing controls
+## Capability modes
 
-- Owners create protected text resources and may replace content without the
-  old content ever returning to the browser.
-- Leases last 30–3,600 seconds and can be revoked immediately.
-- Deleting a user-created resource soft-deletes its metadata, removes its file,
-  and revokes every active lease to it.
-- Allowed and denied reads produce receipts; a successful Run is correlated
-  back to its policy decision.
+- **Manual:** one Agent + one resource + read + purpose + expiry. Useful for the
+  Playground and high-risk approval/recovery demos.
+- **Team Task:** explicit attach-time consent creates separate specialist grants,
+  each additionally bound to one task ID. They cannot authorize Playground or a
+  different task and are revoked on completion, failure, or stop.
+
+The Lead never gets a protected mount. Delegation therefore cannot widen data
+authority. Every specialist is checked on every protected turn.
 
 ## Denied path
 
-Missing, expired, or revoked lease; foreign Agent; foreign resource; or deleted
+Missing, expired, revoked, wrong-task, foreign-Agent, foreign-resource, or deleted
 resource → append denial receipt → do not create a Run → do not mount the file.
 
 ## Honest boundary
 
-This hackathon build uses seeded demo identities, a single-process JSON store,
-and ordinary local containers. Hash chaining detects receipt modification but
-is not an external append-only log. Production next steps are OIDC/SSO,
-transactional policy storage, a signed/WORM audit sink, HTTPS/Secure cookies,
-and hardened per-tenant sandboxes.
+This POC uses seeded identities, a single-process JSON store, and local
+containers. Hash chaining detects modification but is neither signed nor an
+external append-only log. Existing conversation resumption also uses one shared
+host Codex state directory; protected vault files are not stored there, but
+production must partition that state by Agent principal. Other next steps are
+OIDC/SSO, transactional policy storage, signed WORM receipts, durable
+coordination, and hardened per-tenant sandboxes.

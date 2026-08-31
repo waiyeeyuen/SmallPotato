@@ -90,6 +90,7 @@ export const api = {
     specialistAgentIds: string[];
     agentSelection: TeamTask["agentSelection"];
     resourceId?: string;
+    resourceAccessMode?: TeamTask["resourceAccessMode"];
   }) =>
     request<{ task: TeamTask }>("/api/team-tasks", {
       method: "POST",

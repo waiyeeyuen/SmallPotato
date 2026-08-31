@@ -42,7 +42,26 @@ describe("JsonStore", () => {
     expect(store.snapshot().teamTasks[0]?.activeTurnStartedAt).toBeNull();
     expect(store.snapshot().teamTasks[0]?.turnPolicy).toBeNull();
     expect(store.snapshot().teamTasks[0]?.agentSelection).toBe("user");
+    expect(store.snapshot().teamTasks[0]?.resourceAccessMode).toBe("manual");
     expect(JSON.parse(await readFile(filePath + ".v4.backup", "utf8")).version).toBe(4);
+    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(6);
+  });
+
+  it("backs up version 5 data before adding task-scoped authorization fields", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    await writeFile(filePath, JSON.stringify({
+      version: 5,
+      users: [], sessions: [], resources: [], agents: [], grants: [], decisions: [],
+      messages: [], runs: [], teamTasks: [], teamTaskEvents: [],
+    }));
+
+    const store = new JsonStore(filePath);
+    await store.initialize();
+
+    expect(store.snapshot().version).toBe(6);
+    expect(JSON.parse(await readFile(filePath + ".v5.backup", "utf8")).version).toBe(5);
     expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(6);
   });
 

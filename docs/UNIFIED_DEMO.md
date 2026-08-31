@@ -1,171 +1,86 @@
-# PotatoGuard unified three-minute demo
+# PotatoGuard three-minute demo
 
-One workflow, start to finish: a team of Agents works on a protected document,
-hits the policy wall mid-flight, and continues only after you grant a lease.
-Permissioning and coordination are not two halves of this demo — they are the
-same run.
+## Claim
 
-The thesis: **an Agent's authority is granted by the server, never claimed by the
-Agent — and delegation can never widen it.**
+PotatoGuard makes multi-Agent coordination useful on private data without
+confusing human ownership, Agent authority, or Lead delegation.
 
-| Authority | Question | Enforced by | Evidence |
+| Authority | Meaning | Enforcement evidence |
+| --- | --- | --- |
+| Human identity | Alice and Bob own different Agents, tasks, and documents | HttpOnly server session and owner-filtered APIs |
+| Agent data authority | A specialist may read one resource only under an active manual or task-bound capability | Pre-Runtime decision, read-only mount, access receipt |
+| Lead delegation | The Lead may route only to the task's authorized specialist roster | Validated structured decision and coordination event |
+
+The recommended flow is automatic but not ambient: selecting **Authorize for
+this task** is Alice's explicit consent to create separate temporary read
+capabilities for the final specialist roster. Each capability carries the task
+ID, cannot be reused in the Playground or another task, and is revoked when the
+task completes, fails, or stops. The Lead never receives the document.
+
+## Prepared state
+
+Run:
+
+```bash
+npm run poc
+node scripts/demo-video/prepare.mjs --smoke
+```
+
+Then open <http://localhost:3000>. The preparation script ensures:
+
+- a real Ark-backed turn succeeds inside the container Runtime;
+- Alice owns **Tokyo Travel Profile**;
+- no Alice task is running or paused;
+- Trip Coordinator, Flight & Hotel Scout, and Budget Analyst are ready.
+
+Use `alice` / `alice-potato`. All demo content is fictional.
+
+## Exact three-minute recording plan
+
+| Time | Exact actions | Narration | Expected proof |
 | --- | --- | --- | --- |
-| **Data** | Which files may this Agent read? | A capability lease, checked before every specialist turn | Authorization receipts |
-| **Delegation** | Which Agents may this Lead call? | The authorized specialist pool, checked on every Lead turn | Coordination events |
+| 0:00–0:20 | Sign in as Alice. Select **Trip Coordinator**. Point to Alice in the sidebar and the Agent principal under its name. | “Alice is the authenticated human. Every Agent she owns has a different non-human principal, so owning an Agent does not silently give it all of her access.” | Human and Agent identities are visibly separate. |
+| 0:20–0:45 | Open **Playground**. Select **Finance Report · Bob Lim · external**. Enter: `Read the selected protected document and return its forecast.` Press Enter. | “Alice can discover that Bob has a protected document, but private metadata is redacted. Neither Alice nor her Agent owns it.” | Immediate deny; `RESOURCE_NOT_OWNED`; no Runtime starts and no protected mount occurs. |
+| 0:45–1:05 | Open **Audit receipts**. Point to the red deny row, Alice → Agent principal, Finance Report, and **Hash chain verified**. | “The backend denied this before execution and still produced attributable evidence: human, Agent principal, action, resource, reason, and hash.” | Identity and authorization failure path with auditable evidence. |
+| 1:05–1:45 | Click **Team tasks** → **New task** if needed. Paste the objective below. Choose **Trip Coordinator**, **You pick them**, **Flight & Hotel Scout**, **Budget Analyst**, and **Tokyo Travel Profile**. Leave **Authorize for this task** selected. Click **Start task**. | “Now Alice explicitly attaches her own travel profile to one team task. PotatoGuard creates a separate read-only capability for each selected specialist, bound to this task only. The Lead coordinates but never sees the raw document.” | Task-access event appears, roster is reserved, Lead establishes a coordination plan and delegates. |
+| 1:45–2:25 | Show the live conversation. Point to **Task-scoped access**, current Agent/assignment, then the green **Access decision · ALLOW** event when it appears. | “The Lead chooses who should work next. Before every specialist turn, policy independently checks that exact principal, document, action, expiry, and task ID. Only then is the document mounted read-only into that disposable turn.” | Multi-Agent routing and authorization are part of one real workflow. |
+| 2:25–2:45 | When complete, point to the final Lead synthesis and **Task access closed**. If still running, open **Activity log** and point to its verified badge plus handoffs/ALLOW rows. | “The specialists use the dates, budget, and preferences, and the Lead synthesizes their actor-labelled contributions. At the terminal boundary, every task capability is revoked automatically.” | Real private-context output; coordination and capability lifecycle are visible. |
+| 2:45–3:00 | Select a specialist → **Access leases** (show revoked task-scoped lease), then **Audit receipts** (show Team Task ALLOW). | “Delegation decided who worked; capability policy decided what each Agent could read. Neither authority was claimed by a model, and both are tamper-evident.” | Auto-revocation and correlated authorization evidence close the story. |
 
-Both chains use the same primitive: `chainHash` in
-[`apps/server/src/audit.ts`](../apps/server/src/audit.ts).
+Use this exact objective:
 
-## How the enforcement works
+```text
+Using the protected Tokyo Travel Profile, create a practical 4-day Tokyo itinerary.
+Respect every date, budget, dietary, pace, and neighbourhood preference in the file.
+The Flight & Hotel Scout should recommend a suitable neighbourhood, airport transfer,
+and lodging budget; the Budget Analyst should challenge costs and produce a compact SGD
+budget table. The Lead must reconcile both contributions into one final Markdown plan.
+```
 
-A Team Task can name one protected resource. Every **specialist** turn is then
-authorized independently through `SecurityService.authorizeResourceRead` before
-the Runtime is touched:
+## Backup actions
 
-- **Allow** — the file is mounted read-only at `/authorized-resources/<id>.txt`
-  for that turn only, and an `ALLOW` coordination event is written.
-- **Deny** — a `DENY` event is written, the whole task **pauses** with the reason,
-  every Agent is released to `ready`, and no container runs.
+- **Model latency:** keep recording the real loading state, then cut directly to
+  a completed rehearsal task in History if you have one. The preparation script
+  never fabricates a completed task; do not claim a prior task completed during
+  the uncut interval.
+- **Task pauses on a model-format error:** show the retry/failure events and click
+  **Resume**. This is genuine middleware recovery evidence.
+- **Runtime warning:** do not record. Rerun `node scripts/demo-video/prepare.mjs`;
+  it validates Ark and repairs the local Runtime image tag when possible.
+- **Need a deterministic deny/recover variant:** start the same task with
+  **Require manual approval**. The first specialist is denied with
+  `GRANT_MISSING`; issue a five-minute manual lease to each selected specialist,
+  return to Team Tasks, and click **Resume**.
+- **Need to finish inside three minutes:** the mandatory evidence is the
+  cross-user denial, task access issuance, Lead handoff, one specialist ALLOW,
+  verified Activity log, and a revoked task lease. The full synthesis can be
+  shown from a prior successful rehearsal item.
 
-The Lead is deliberately *not* granted the document. It coordinates without the
-data, so a Lead cannot hand out access it does not itself hold. See
-`authorizeSpecialistTurn` in
-[`apps/server/src/team-task-service.ts`](../apps/server/src/team-task-service.ts).
+## What is real, and what is POC scope
 
-## Prepare before the timer
-
-1. `npm run poc`, open <http://localhost:3000>, confirm the Runtime banner is clear.
-   The container Runtime is required — protected resources are refused otherwise.
-2. Sign in as Alice (`alice` / `alice-potato`). Seven Agents are pre-seeded.
-3. In **Protected resources**, create **Tokyo Trip Brief** with fictional content
-   the team genuinely needs, for example:
-
-   ```text
-   Travellers: 2. Budget: US$3000 all-in.
-   Avoid the first week of April (company offsite).
-   Prefer a walkable neighbourhood with fast airport access.
-   One splurge dinner is approved; no guided tours.
-   ```
-
-4. Confirm **no Agent holds a lease** for it. Deny-by-default is the opening beat.
-5. Fill the **Team tasks** form but do not press Start:
-   - Objective: *"Plan our Tokyo trip strictly according to the protected brief.
-     Recommend dates, a neighbourhood, and a day-by-day plan within budget."*
-   - Lead: **Trip Coordinator**
-   - Who picks the members: **You pick them** → **Flight & Hotel Scout** and
-     **Budget Analyst**
-   - Protected document: **Tokyo Trip Brief**
-6. Fictional data only. Do not open `.env`, logs, or the host resource directory.
-
-> **Use exactly two specialists.** Every specialist turn is gated, so each one
-> needs its own lease. Two keeps the conversation real while letting you grant
-> both leases in one visit to the Access leases view.
-
-## Timed script
-
-### 0:00–0:25 — Start one task that needs protected data
-
-Press Start. While the Lead takes its first turn, set up the whole demo in one
-breath:
-
-> "Alice owns these Agents, and each has a principal ID separate from hers. This
-> team is planning a trip from a document none of them is allowed to read yet.
-> Watch what the platform does about that."
-
-### 0:25–0:55 — Coordination, then the wall
-
-The Lead commits its coordination mode and delegates. Point at the live panel:
-active Agent, the exact assignment, the `coordination_plan` event.
-
-Then the first specialist turn is refused and **the task pauses on its own**.
-
-- The banner names the Agent and the reason: `GRANT_MISSING`.
-- The Activity log shows a red **Access decision · DENY** row.
-- Every Agent has dropped back to **ready**.
-
-> "The Lead has delegation authority — it chose who works next. It does not have
-> data authority, and it cannot grant any. That specialist was refused before a
-> container started, so the brief was never mounted. The whole workflow stopped
-> rather than continuing without the data."
-
-### 0:55–1:25 — Grant least privilege
-
-Open **Access leases**. Issue a **5-minute read lease** for **Tokyo Trip Brief**
-to **both** specialists, purpose `Plan the trip from the brief`.
-
-> "One resource, one action, one Agent, and an expiry. Nothing is standing."
-
-> **Why five minutes and not sixty seconds.** The lease has to outlive the resume,
-> the Lead's re-delegation, and the specialist's read — two real model calls. A
-> 60-second lease can expire inside that window and turn your ALLOW beat into a
-> second denial. If you want to show a short countdown, use 60 seconds only when
-> you are confident of the model's latency; the optional revoke beat below proves
-> immediacy far more reliably than a race against expiry.
-
-### 1:25–2:15 — Resume, and watch it work
-
-Return to **Team tasks** and press **Resume**. The Lead reviews the interruption,
-re-delegates, and this time the specialist turn is authorized: a green
-**Access decision · ALLOW** row appears and the answer quotes real constraints
-from the brief — the offsite week, the US$3000 cap, the walkable neighbourhood.
-
-> "Same team, same objective, same Lead decision. The only thing that changed is
-> a lease. The file is mounted read-only for that turn and gone afterwards."
-
-Let it run to the Lead's synthesis if the clock allows.
-
-### 2:15–3:00 — One chain, one close
-
-Split the last stretch across both evidence views:
-
-- **Team tasks → Activity log**: the deny and the allow sit inline with the
-  handoffs and assignments that caused them, hash-chained, `eventsVerified` true.
-- **Audit receipts**: the same two decisions as authorization receipts — human
-  name, Agent principal, resource, action, reason, timestamp, **Hash chain
-  verified**.
-
-> "One workflow produced both records. Delegation decided who works; leases
-> decided what they could read; neither Agent chose either; and both are written
-> to the same tamper-evident chain. That is one control plane."
-
-Click **Export CSV**.
-
-## Timing and failure recovery
-
-- The pause arrives after just **one** model call (the Lead's first turn), so the
-  most important beat lands early and cheaply.
-- After the resume it is roughly three more calls: Lead re-delegates, specialist
-  reads, Lead synthesises. If the clock is short, close on the ALLOW row and the
-  two chains rather than waiting for the synthesis.
-- **If you selected more than two specialists**, an un-leased one can pause the
-  task a second time. Grant every selected specialist a lease at the 0:55 beat.
-- If the Lead misbehaves, **Stop task** releases every Agent immediately and the
-  Activity log still holds the full chain — the evidence close works from a
-  stopped task.
-- If the container Runtime is down, the task pauses with a Runtime message
-  instead of a policy denial. Fix the engine before starting; this is the one
-  failure that has no good narration.
-
-## Optional beat if you have spare time
-
-Revoke a lease while the task is running. The next specialist turn is refused
-with `GRANT_REVOKED` and the workflow pauses again mid-flight — the strongest
-possible statement that revocation is not advisory.
-
-## What to say about production
-
-The authorization boundary, the Runtime mount, and both hash chains are real.
-Identity and storage are local hackathon fixtures. The next steps are OIDC/SSO,
-transactional policy storage, signed receipts in an external WORM sink, and
-per-tenant Runtime isolation.
-
-## Related documents
-
-- [JUDGE_RUNBOOK.md](JUDGE_RUNBOOK.md) — exhaustive validation: the single-Agent
-  happy path, every denial case, Team Task authorization, coordination modes,
-  stop/resume, stale state, and browser-ID tampering
-- [POTATOGUARD_ARCHITECTURE.md](POTATOGUARD_ARCHITECTURE.md) — trust boundary diagram
-- [COORDINATION_ARCHITECTURE.md](COORDINATION_ARCHITECTURE.md) — how the Lead and
-  specialists are orchestrated
-- [`scripts/demo-video/`](../scripts/demo-video/README.md) — records this exact
-  script as a repeatable take
+The model calls, server policy, read-only container mounts, tenant checks,
+task-state machine, retries, and hash verification are real. Alice/Bob identities
+and JSON persistence are local fixtures. Hash chains detect changes but are not
+external signed audit logs. The production path is OIDC, transactional policy
+storage, a durable queue, hardened tenant sandboxes, and signed receipts in a
+WORM sink.

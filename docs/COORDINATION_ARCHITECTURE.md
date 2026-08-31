@@ -2,85 +2,68 @@
 
 ## Objective
 
-Team Tasks are real middleware, not a scripted UI. A user supplies one objective and
-selects a Lead plus one or more specialists. The server owns the workflow state,
-reserves the participating Agents, invokes each Codex Runtime turn, validates its
-structured result, persists every transition, and releases the Agents only after a
-terminal outcome.
+Team Tasks are persistent middleware, not scripted UI choreography. The signed-in
+user supplies an objective, Lead, specialist-selection policy, and optionally an
+owned protected document. The server reserves only that user's Agents, validates
+every Lead decision, gates every protected specialist turn, persists every
+transition, and releases the roster at a terminal outcome.
 
 ```mermaid
 flowchart LR
-  User["User starts a Team Task"] --> UI["React mission control"]
+  User["Signed-in user"] --> UI["React mission control"]
   UI --> API["Fastify control plane"]
-  API --> Coordinator["Persistent Team Task coordinator"]
-  Coordinator --> Store["JSON task state and ordered event log"]
-  Coordinator --> Workspace["Shared task workspace"]
-  Coordinator --> Lead["Lead Codex session"]
-  Lead -->|"Validated next-Agent decision or completion"| Coordinator
-  Coordinator --> Specialist["Selected specialist Codex sessions"]
-  Specialist -->|"Validated result and activity"| Coordinator
-  Lead --> Workspace
-  Specialist --> Workspace
-  UI -->|"400 ms status polling"| API
+  API --> Identity["Session and ownership checks"]
+  Identity --> Coordinator["Persistent Team Task coordinator"]
+  Coordinator --> Store["Task state and hash-chained events"]
+  Coordinator --> Lead["Lead Agent session"]
+  Lead -->|"validated plan, delegation, or completion"| Coordinator
+  Coordinator --> Policy{"specialist + read + resource + task + time"}
+  Policy -->|deny| Pause["Pause and release roster"]
+  Policy -->|allow| Runtime["Disposable specialist Runtime"]
+  Runtime --> Workspace["Shared task workspace"]
+  Runtime -->|"actor-labelled contribution"| Coordinator
 ```
 
-## Runtime flow
+## Protected task flow
 
-```mermaid
-sequenceDiagram
-  actor User
-  participant UI as Mission control
-  participant C as Coordinator
-  participant L as Lead Agent
-  participant A as Specialist A
-  participant B as Specialist B
-
-  User->>UI: Submit objective and team
-  UI->>C: Create Team Task
-  C->>C: Reserve Agents and persist task_started
-  C->>L: Ask for the most useful first conversational turn
-  L-->>C: Select one relevant specialist and assignment
-  C->>C: Validate the Agent against the authorized pool
-  C->>A: Run the first assignment
-  A-->>C: Return contribution and activity evidence
-  C->>L: Provide the updated actor-labelled transcript
-  L-->>C: Select the best next specialist using the new result
-  C->>B: Run the context-aware next assignment
-  B-->>C: Return contribution and activity evidence
-  C->>L: Review all results and synthesize
-  L-->>C: Return complete with final summary
-  C->>C: Persist completion and release Agents
-  C-->>UI: Terminal task state unlocks a new task
-```
-
-The Lead is intentionally consulted after every specialist turn. This prevents later
-work from being selected before earlier output exists. The UI polls quickly and shows
-the active routing or specialist assignment, elapsed time, and conversation round so
-the genuine collaboration remains understandable while it runs.
+1. The API derives the human owner from the session; browser-supplied owner IDs
+   are rejected.
+2. The coordinator accepts only owned, ready Agents and an owned resource.
+3. In recommended task-access mode, the server issues one read capability per
+   final specialist. It is bound to the task ID and has a 30-minute crash-safe
+   upper bound.
+4. The Lead receives the objective, roster metadata, shared state, and labelled
+   transcript. It never receives the protected mount.
+5. A Lead decision must validate against the committed roster. Out-of-pool IDs
+   are rejected.
+6. Before each specialist turn, authorization is evaluated again. An allow
+   produces a read-only mount for that disposable turn; a deny pauses the task
+   before the Runtime is invoked.
+7. The contribution returns to the Lead, which chooses the next specialist or
+   synthesizes the final result.
+8. Completion, failure, or stop releases Agents and revokes all task capabilities.
 
 ## Coordination guarantees
 
-- The server, not the browser, chooses the active Agent and owns all transitions.
-- Only selected, ready Agents can participate; they are reserved for the task.
-- Every delegation explicitly names one selected specialist; out-of-pool IDs fail validation.
-- At least two distinct specialists contribute when the authorized pool contains two or more.
-- The Lead may reuse a specialist or leave an irrelevant pool member unused when the transcript justifies it.
-- Every specialist receives the same objective, shared state, assignments, named prior messages, and activity evidence.
-- Shared-workspace turns are sequential to avoid conflicting file writes.
-- Every turn start, decision, handoff, result, retry, failure, pause, resume, stop,
-  state patch, and completion is recorded as an ordered event.
-- Each Agent has a separate per-task Codex thread while sharing task context and the
-  task workspace.
-- A Lead failure pauses the task after two attempts. A specialist failure returns to
-  the Lead after two attempts for a dynamic recovery decision.
-- Twelve successful specialist rounds force final synthesis; a 30-turn global limit
-  is the second runaway-coordination safeguard.
-- Restarted in-flight tasks become paused and can be resumed explicitly.
-- Terminal tasks clear Agent reservations and do not block the next task.
+- Task listing, detail, event verification, stop, and resume are owner-scoped.
+- A user cannot put another user's Agent or resource into a task.
+- One open task per user prevents conflicting workflows without allowing one
+  tenant to block another.
+- The first Lead turn commits `facilitated` or `sequential` routing; the server
+  owns all later transitions.
+- Specialist work is sequential within the shared workspace, avoiding concurrent
+  file-write races.
+- Lead failures retry once then pause. Specialist failures retry once then return
+  to the Lead for a recovery decision.
+- Twelve successful specialist rounds force synthesis; 30 total turns are the
+  global runaway guard.
+- Every start, plan, handoff, policy decision, contribution, retry, state patch,
+  pause, resume, stop, and completion enters an ordered hash chain.
+- Restarted in-flight tasks become paused and require explicit human resume.
 
 ## Deliberate scope
 
-The final hackathon build permits one active or paused Team Task at a time. This keeps
-the demo deterministic and makes resource ownership obvious. The next production
-step would be a durable queue with per-workspace locks, tenant identity, and a database
-transaction layer for concurrent teams.
+The coordinator and JSON store run in one process. Production requires a
+transactional database, durable queue, distributed leases, per-workspace locks,
+and hardened tenant Runtime isolation. The POC's value is the executable policy
+and state-machine boundary, not a claim of production infrastructure.

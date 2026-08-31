@@ -42,6 +42,7 @@ function rebuildDecisions(
         decision.resourceOwnerUserId ??
         resources.find((resource) => resource.id === decision.resourceId)?.ownerUserId ??
         decision.humanUserId,
+      teamTaskId: decision.teamTaskId ?? null,
     } as Omit<
       Database["decisions"][number],
       "runId" | "previousReceiptHash" | "receiptHash"
@@ -69,10 +70,16 @@ function normalizeDatabase(database: Database): Database {
       ...task,
       ownerUserId: task.ownerUserId ?? "user-alice",
       resourceId: task.resourceId ?? null,
+      resourceAccessMode: task.resourceAccessMode ?? "manual",
       agentSelection: task.agentSelection ?? "user",
       turnPolicy: task.turnPolicy ?? null,
       assignmentQueue: task.assignmentQueue ?? [],
       activeTurnStartedAt: task.activeTurnStartedAt ?? null,
+    })),
+    grants: (database.grants ?? []).map((grant) => ({
+      ...grant,
+      source: grant.source ?? "manual",
+      teamTaskId: grant.teamTaskId ?? null,
     })),
     teamTaskEvents: (database.teamTaskEvents ?? []).map((event) => ({
       ...event,
@@ -91,6 +98,9 @@ function migrateDatabase(value: unknown): Database {
   if (!Array.isArray(parsed.agents)) throw new Error("Unsupported database format");
   if (parsed.version === 6) return normalizeDatabase(parsed as Database);
   if (parsed.version === 5) {
+    // v5 → v6: add the cross-user `shares` table and backfill
+    // PolicyDecision.resourceOwnerUserId / teamTaskId, rebuilding the receipt
+    // hash-chain so verifyReceiptChain stays green.
     const legacy = parsed as unknown as Database & Record<string, unknown>;
     const resources = Array.isArray(legacy.resources) ? legacy.resources : [];
     return normalizeDatabase({
@@ -118,7 +128,7 @@ function migrateDatabase(value: unknown): Database {
     } else {
       base = parsed as unknown as Record<string, unknown>;
     }
-  } else if (parsed.version === 2 || parsed.version === 4) {
+  } else if (parsed.version === 2 || parsed.version === 4 || parsed.version === 5) {
     const legacy = parsed as Partial<Database>;
     if (Array.isArray(legacy.teamTasks) && Array.isArray(legacy.teamTaskEvents)) {
       base = {
@@ -203,6 +213,7 @@ function migrateDatabase(value: unknown): Database {
       outcome: decision.outcome ?? "deny",
       reason: decision.reason ?? "RESOURCE_NOT_FOUND",
       grantId: decision.grantId ?? null,
+      teamTaskId: decision.teamTaskId ?? null,
       createdAt: decision.createdAt ?? timestamp,
     } as const;
     const migrated = {
@@ -241,7 +252,9 @@ export class JsonStore {
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as unknown;
       const sourceVersion = (parsed as { version?: number }).version;
-      if (sourceVersion === 4) {
+      if (sourceVersion === 5) {
+        await copyFile(this.filePath, this.filePath + ".v5.backup");
+      } else if (sourceVersion === 4) {
         await copyFile(this.filePath, this.filePath + ".v4.backup");
       } else if (
         sourceVersion === 3 &&

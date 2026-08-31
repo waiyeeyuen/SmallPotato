@@ -80,6 +80,7 @@ interface DecisionFields {
   outcome: "allow" | "deny";
   reason: PolicyReason;
   grantId: string | null;
+  teamTaskId?: string | null;
 }
 
 /**
@@ -103,6 +104,7 @@ function appendDecision(database: Database, fields: DecisionFields): PolicyDecis
     outcome: fields.outcome,
     reason: fields.reason,
     grantId: fields.grantId,
+    teamTaskId: fields.teamTaskId ?? null,
     createdAt: now(),
   };
   const decision: PolicyDecision = {
@@ -319,24 +321,42 @@ export class SecurityService {
         )
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
       const state = incomingShare ? shareState(incomingShare) : null;
+      const ownedByCurrentUser = resource.ownerUserId === actor.userId;
+      const sharedWithCurrentUser = state === "active";
+      const ownerName =
+        snapshot.users.find((user) => user.id === resource.ownerUserId)?.displayName ??
+        "Unknown owner";
+      // Contents and private metadata stay hidden unless the actor owns the
+      // resource or has it actively shared to them.
+      const visible = ownedByCurrentUser || sharedWithCurrentUser;
       return {
         id: resource.id,
         name: resource.name,
-        description: resource.description,
+        description: visible
+          ? resource.description
+          : `Protected resource owned by ${ownerName}. Contents and private metadata are hidden.`,
         ownerUserId: resource.ownerUserId,
-        ownerName:
-          snapshot.users.find((user) => user.id === resource.ownerUserId)?.displayName ??
-          "Unknown owner",
-        ownedByCurrentUser: resource.ownerUserId === actor.userId,
-        sharedWithCurrentUser: state === "active",
+        ownerName,
+        ownedByCurrentUser,
+        sharedWithCurrentUser,
         shareState: state,
         shareExpiresAt: state === "active" ? incomingShare?.expiresAt ?? null : null,
-        sizeBytes: resource.sizeBytes,
+        sizeBytes: visible ? resource.sizeBytes : 0,
         isDemo: resource.isDemo,
         createdAt: resource.createdAt,
         updatedAt: resource.updatedAt,
       };
     });
+  }
+
+  requireOwnedResource(actor: RequestActor, resourceId: string): ProtectedResource {
+    const resource = this.store.snapshot().resources.find(
+      (item) => item.id === resourceId && !item.deletedAt,
+    );
+    if (!resource || resource.ownerUserId !== actor.userId) {
+      throw new HttpError(403, "You can authorize only resources you own");
+    }
+    return resource;
   }
 
   async createResource(
@@ -470,6 +490,8 @@ export class SecurityService {
       resourceId,
       actions: ["read"],
       purpose: purpose.trim(),
+      source: "manual",
+      teamTaskId: null,
       grantedByUserId: actor.userId,
       createdAt: timestamp,
       expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
@@ -477,6 +499,76 @@ export class SecurityService {
     };
     await this.store.mutate((database) => database.grants.push(grant));
     return { ...grant, resourceName: resource.name, state: "active" as const };
+  }
+
+  /**
+   * Issue one task-scoped read lease per specialist for a Team Task. Idempotent:
+   * an active `team_task` grant for the same (task, principal, resource) is
+   * reused rather than duplicated. Cleared by `revokeTaskGrants` when the task
+   * ends.
+   */
+  async ensureTaskGrants(
+    actor: RequestActor,
+    agents: Agent[],
+    resourceId: string,
+    teamTaskId: string,
+    ttlSeconds = 30 * 60,
+  ): Promise<{ grants: PermissionGrant[]; issuedCount: number }> {
+    this.requireOwnedResource(actor, resourceId);
+    for (const agent of agents) this.requireAgentOwner(actor, agent);
+    const timestamp = now();
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+    return this.store.mutate((database) => {
+      const grants: PermissionGrant[] = [];
+      let issuedCount = 0;
+      for (const agent of agents) {
+        const existing = database.grants.find(
+          (grant) =>
+            grant.source === "team_task" &&
+            grant.teamTaskId === teamTaskId &&
+            grant.agentPrincipalId === agent.principalId &&
+            grant.resourceId === resourceId &&
+            grant.actions.includes("read") &&
+            grantState(grant) === "active",
+        );
+        if (existing) {
+          grants.push(structuredClone(existing));
+          continue;
+        }
+        const grant: PermissionGrant = {
+          id: randomUUID(),
+          agentPrincipalId: agent.principalId,
+          resourceId,
+          actions: ["read"],
+          purpose: `Read-only access for Team Task ${teamTaskId}`,
+          source: "team_task",
+          teamTaskId,
+          grantedByUserId: actor.userId,
+          createdAt: timestamp,
+          expiresAt,
+          revokedAt: null,
+        };
+        database.grants.push(grant);
+        grants.push(structuredClone(grant));
+        issuedCount += 1;
+      }
+      return { grants, issuedCount };
+    });
+  }
+
+  async revokeTaskGrants(teamTaskId: string): Promise<number> {
+    return this.store.mutate((database) => {
+      const timestamp = now();
+      let revoked = 0;
+      for (const grant of database.grants) {
+        if (grant.source !== "team_task" || grant.teamTaskId !== teamTaskId || grant.revokedAt) {
+          continue;
+        }
+        grant.revokedAt = timestamp;
+        revoked += 1;
+      }
+      return revoked;
+    });
   }
 
   async revokeGrant(actor: RequestActor, agent: Agent, grantId: string) {
@@ -667,6 +759,7 @@ export class SecurityService {
     actor: RequestActor,
     agent: Agent,
     resourceId: string,
+    context: { teamTaskId?: string } = {},
   ): Promise<{ decision: PolicyDecision; resource: ProtectedResource | null }> {
     return this.store.mutate((database) => {
       const resource = database.resources.find(
@@ -677,7 +770,9 @@ export class SecurityService {
           (grant) =>
             grant.agentPrincipalId === agent.principalId &&
             grant.resourceId === resourceId &&
-            grant.actions.includes("read"),
+            grant.actions.includes("read") &&
+            (grant.source === "manual" ||
+              (Boolean(context.teamTaskId) && grant.teamTaskId === context.teamTaskId)),
         )
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
       const activeGrant = matching.find((grant) => grantState(grant) === "active") ?? null;
@@ -723,6 +818,7 @@ export class SecurityService {
         reason,
         grantId:
           activeGrant?.id ?? activeShare?.id ?? matching[0]?.id ?? shares[0]?.id ?? null,
+        teamTaskId: context.teamTaskId ?? null,
       });
       return {
         decision,

@@ -16,7 +16,10 @@ flowchart LR
   Coordinator --> Lead["Lead<br/>coordination context only"]
   Lead -->|"validated roster decision"| Coordinator
   Coordinator --> Capability{"principal + read + resource<br/>+ task + time + revocation"}
-  Capability -->|deny before execution| Evidence
+  Capability -->|step-up needed| Approval["inline human approval"]
+  Approval -->|allow once / Agent / roster| Capability
+  Approval -->|deny| Evidence
+  Capability -->|other deny before execution| Evidence
   Capability -->|allow| Vault["server-side resource vault"]
   Vault -->|"one read-only mount"| Runtime["disposable specialist Runtime"]
   Runtime --> Coordinator
@@ -37,12 +40,15 @@ flowchart LR
 
 ## Capability modes
 
-- **Manual:** one Agent + one resource + read + purpose + expiry. Useful for the
-  Playground and high-risk approval/recovery demos.
+- **Ask me when needed:** a missing owned-resource grant pauses at the exact
+  specialist boundary and displays a server-generated approval card. The human
+  may allow one turn, one Agent for the Team, the current roster, or deny. No
+  specialist Runtime starts before the decision.
 - **Team Task:** explicit attach-time consent creates separate specialist grants,
-  each additionally bound to one task ID. They cannot authorize Playground or a
-  different task. They remain available across requests in that persistent team
-  and are revoked when the team ends.
+  each additionally bound to one task ID. For a Lead-selected team, grants are
+  deferred until the Lead commits its final roster. They cannot authorize
+  Playground or a different task, remain available across requests in that
+  persistent team, and are revoked when the team ends.
 
 The Lead never gets a protected mount. Delegation therefore cannot widen data
 authority. Every specialist is checked on every protected turn.

@@ -141,6 +141,22 @@ export type TeamTaskStatus = "ready" | "running" | "paused" | "completed" | "fai
 export type TeamTaskTurnPolicy = "facilitated" | "sequential";
 export type TeamAgentSelection = "user" | "lead";
 export type TeamResourceAccessMode = "manual" | "task";
+export type TeamAccessApprovalDecision =
+  | "allow_once"
+  | "allow_agent_task"
+  | "allow_roster_task"
+  | "deny";
+
+export interface TeamAccessApprovalRequest {
+  id: string;
+  taskId: string;
+  agentId: string;
+  resourceId: string;
+  action: "read";
+  assignment: string;
+  createdAt: string;
+  expiresAt: string;
+}
 
 export interface TeamAssignment {
   id: string;
@@ -155,6 +171,9 @@ export interface TeamTask {
   leadAgentId: string;
   resourceId: string | null;
   resourceAccessMode: TeamResourceAccessMode;
+  pendingAccessApproval: TeamAccessApprovalRequest | null;
+  oneTimeAccessGrantIds: string[];
+  oneTimeAccessAgentId: string | null;
   specialistAgentIds: string[];
   agentSelection: TeamAgentSelection;
   rosterLocked: boolean;

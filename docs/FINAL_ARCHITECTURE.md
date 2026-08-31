@@ -122,7 +122,7 @@ receipt on every path:
 | --- | --- | --- |
 | Agent not owned by the caller | `AGENT_NOT_OWNED` | deny |
 | Resource missing or deleted | `RESOURCE_NOT_FOUND` | deny |
-| Resource owned by another user | `RESOURCE_NOT_OWNED` | deny |
+| Resource owned by another user and not shared | `SHARE_MISSING` | deny |
 | Unexpired, unrevoked `read` lease for this principal | `GRANT_ACTIVE` | **allow** |
 | Lease was revoked | `GRANT_REVOKED` | deny |
 | Lease has expired | `GRANT_EXPIRED` | deny |

@@ -1044,6 +1044,101 @@ input:focus, textarea:focus, select:focus { border-color: #8a78e8; box-shadow: 0
   border-color: color-mix(in srgb, var(--purple) 24%, var(--line));
   background: var(--purple-soft);
 }
+
+/* Inline step-up approval is a policy surface, not an Agent message. Its amber
+   boundary makes the pause unmistakable while retaining the existing paper and
+   purple control-plane language. */
+.team-access-request {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: var(--sp-3);
+  width: min(100%, 760px);
+  align-self: center;
+  border: 1px solid #d9b85f;
+  border-radius: var(--r-md);
+  background:
+    linear-gradient(135deg, rgba(255, 250, 229, 0.98), rgba(251, 247, 255, 0.98));
+  box-shadow: 0 14px 36px rgba(75, 58, 20, 0.1);
+  padding: var(--sp-4);
+}
+.team-access-request-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: #2e2940;
+  color: #fff4c2;
+  font-size: 22px;
+  font-weight: 800;
+}
+.team-access-request-copy {
+  min-width: 0;
+}
+.team-access-kicker {
+  display: block;
+  margin-bottom: 4px;
+  color: #82651d;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.team-access-request h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-lg);
+  line-height: 1.25;
+}
+.team-access-request p {
+  margin: var(--sp-2) 0 0;
+  color: #625c50;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.team-access-facts {
+  display: grid;
+  gap: var(--sp-2);
+  margin: var(--sp-3) 0;
+}
+.team-access-facts > div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: var(--sp-2);
+}
+.team-access-facts dt {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+}
+.team-access-facts dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.team-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.team-access-actions .button {
+  min-height: 36px;
+}
+.team-access-deny {
+  border: 1px solid color-mix(in srgb, #a84c4c 42%, var(--line));
+  background: transparent;
+  color: #923e3e;
+}
+.team-access-deny:hover:not(:disabled) {
+  background: #f8e9e6;
+}
+.team-access-footnote {
+  display: block;
+  margin-top: var(--sp-3);
+  color: var(--muted);
+  font-size: 10px;
+}
 .team-bubble p {
   margin: 0;
   white-space: pre-wrap;
@@ -1375,6 +1470,13 @@ input:focus, textarea:focus, select:focus { border-color: #8a78e8; box-shadow: 0
   }
   .team-message {
     max-width: 100%;
+  }
+  .team-access-request {
+    grid-template-columns: 1fr;
+    padding: var(--sp-3);
+  }
+  .team-access-actions .button {
+    width: 100%;
   }
   .team-chat,
   .team-chat-head {

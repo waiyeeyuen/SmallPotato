@@ -4,6 +4,7 @@ import { MarkdownContent } from "./MarkdownContent";
 import type {
   Agent,
   ResourceSummary,
+  TeamAccessApprovalDecision,
   TeamAgentSelection,
   TeamResourceAccessMode,
   TeamTask,
@@ -45,6 +46,11 @@ const EVENT_LABEL: Record<string, string> = {
   turn_retry: "Retried a turn",
   turn_failed: "Turn failed",
   resource_authorization: "Access decision",
+  access_approval_requested: "Approval requested",
+  access_approval_granted: "Approval granted",
+  access_approval_denied: "Approval denied",
+  access_approval_consumed: "One-turn access closed",
+  access_approval_expired: "Approval expired",
   task_access_granted: "Task access issued",
   task_access_revoked: "Task access closed",
   task_paused: "Paused",
@@ -270,6 +276,22 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
     }
   };
 
+  const resolveAccessApproval = async (decision: TeamAccessApprovalDecision) => {
+    const approval = task?.pendingAccessApproval;
+    if (!task || !approval) return;
+    setSubmitting(true);
+    try {
+      const result = await api.resolveTeamAccessApproval(task.id, approval.id, decision);
+      setTask(result.task);
+      await Promise.all([refreshDetail(task.id), refreshTasks(), onAgentsChanged()]);
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+      await refreshDetail(task.id).catch(() => undefined);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const startNewTask = () => {
     setSelectedId(null);
     setObjective("");
@@ -289,6 +311,11 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
     events.filter((event) => event.agentId === agentId && event.type === "specialist_result").length;
 
   const workingName = agentMap.get(task?.currentAgentId ?? "")?.name ?? "The team";
+  const pendingApproval = task?.pendingAccessApproval ?? null;
+  const approvalAgent = pendingApproval ? agentMap.get(pendingApproval.agentId) : null;
+  const approvalResource = pendingApproval
+    ? resources.find((resource) => resource.id === pendingApproval.resourceId)
+    : null;
   const showForm = !openTask && (!task || terminalStatuses.has(task.status));
   const formReady = showForm && !openTask && readyAgents.length >= 2;
   /** Keep the primary chat focused on user requests and delivered contributions. */
@@ -358,7 +385,7 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
               Stop
             </button>
           )}
-          {task?.status === "paused" && (
+          {task?.status === "paused" && !task.pendingAccessApproval && (
             <>
               <button
                 className="button button-primary"
@@ -485,8 +512,8 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                         <span>
                           <strong>Authorize for this task</strong>
                           <small>
-                            Recommended · issue temporary read-only capabilities to the final
-                            specialist roster, then revoke them automatically when the task ends.
+                            Recommended · once the roster is final, issue separate temporary
+                            read-only capabilities and revoke them when the Team ends.
                           </small>
                         </span>
                       </label>
@@ -498,26 +525,25 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                           onChange={() => setResourceAccessMode("manual")}
                         />
                         <span>
-                          <strong>Require manual approval</strong>
+                          <strong>Ask me when needed</strong>
                           <small>
-                            Every specialist is authorised <strong>before the task starts</strong>,
-                            against its own capability lease. The first one denied refuses the task
-                            with an error and no hand-off happens.
+                            Pause before an unauthorized specialist reads the document and show an
+                            approval request here in the conversation.
                           </small>
                         </span>
                       </label>
                       <p className="team-hint">
-                        The Lead coordinates without the raw document. Every specialist is still
-                        checked separately before each turn; attaching a document never grants
-                        account-wide access.
+                        The Lead chooses or coordinates the roster without the raw document. Every
+                        specialist is checked separately before each turn; attaching a document
+                        never grants account-wide access.
                       </p>
                     </fieldset>
                   )}
                   {resourceId && selectedResource && !selectedResource.ownedByCurrentUser && (
                     <p className="team-hint">
-                      This document is shared with you by {selectedResource.ownerName}. Every
-                      specialist is authorised <strong>before the task starts</strong> against the
-                      owner's share; if the share is revoked the task is refused with no hand-off.
+                      This document is shared with you by {selectedResource.ownerName}. The owner's
+                      share is checked before the Team begins and again before every specialist
+                      turn; you cannot grant access on the owner's behalf.
                     </p>
                   )}
                   {leadPicksAgents ? (
@@ -594,7 +620,7 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                     <strong>{task.resourceAccessMode === "task" ? "Task-scoped access" : "Manual access"}</strong>
                     {task.resourceAccessMode === "task"
                       ? " · temporary read capabilities for the specialist roster"
-                      : " · each specialist needs an existing lease"}
+                      : " · PotatoGuard asks here before an unauthorized read"}
                   </p>
                 )}
                 <ul className="team-members">
@@ -764,6 +790,69 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                   ),
                 )}
 
+                {pendingApproval && (
+                  <section
+                    className="team-access-request"
+                    role="region"
+                    aria-live="polite"
+                    aria-labelledby={`approval-title-${pendingApproval.id}`}
+                  >
+                    <div className="team-access-request-mark" aria-hidden="true">⌁</div>
+                    <div className="team-access-request-copy">
+                      <span className="team-access-kicker">PotatoGuard · blocked before execution</span>
+                      <h3 id={`approval-title-${pendingApproval.id}`}>
+                        {approvalAgent?.name ?? "This specialist"} wants to read {approvalResource?.name ?? "the protected document"}
+                      </h3>
+                      <p>
+                        The document has not been mounted and no specialist Runtime has started.
+                        The Lead does not receive the raw file.
+                      </p>
+                      <dl className="team-access-facts">
+                        <div><dt>Purpose</dt><dd>{pendingApproval.assignment}</dd></div>
+                        <div><dt>Permission</dt><dd>Read-only</dd></div>
+                        <div><dt>Request expires</dt><dd>{time(pendingApproval.expiresAt)}</dd></div>
+                      </dl>
+                      <div className="team-access-actions">
+                        <button
+                          type="button"
+                          className="button button-primary"
+                          disabled={submitting}
+                          onClick={() => void resolveAccessApproval("allow_once")}
+                        >
+                          Allow once
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-ghost"
+                          disabled={submitting}
+                          onClick={() => void resolveAccessApproval("allow_agent_task")}
+                        >
+                          Allow this Agent for Team
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-ghost"
+                          disabled={submitting}
+                          onClick={() => void resolveAccessApproval("allow_roster_task")}
+                        >
+                          Allow current roster
+                        </button>
+                        <button
+                          type="button"
+                          className="button team-access-deny"
+                          disabled={submitting}
+                          onClick={() => void resolveAccessApproval("deny")}
+                        >
+                          Deny & stop request
+                        </button>
+                      </div>
+                      <small className="team-access-footnote">
+                        Access remains bound to this Team Task and is never reusable in Playground.
+                      </small>
+                    </div>
+                  </section>
+                )}
+
                 {task.status === "running" && (
                   <div className="team-typing">
                     <span />
@@ -802,10 +891,12 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                     value={objective}
                     disabled={task.status !== "ready" || submitting}
                     placeholder={
-                      task.status === "ready"
-                        ? "Give the team its next task…"
-                        : task.status === "paused"
-                          ? "Resume or cancel this request to continue…"
+                        task.status === "ready"
+                          ? "Give the team its next task…"
+                          : task.status === "paused"
+                          ? pendingApproval
+                            ? "Choose an access decision above to continue…"
+                            : "Resume or cancel this request to continue…"
                           : "The team is working…"
                     }
                     onChange={(event) => setObjective(event.target.value)}

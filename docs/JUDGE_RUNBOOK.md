@@ -42,7 +42,7 @@ fictional content only.
 
 1. As Alice, select **Finance Report · Bob Lim · external**.
 2. Send the same prompt.
-3. Expected: HTTP 403, `RESOURCE_NOT_OWNED`; Bob's file never enters the Runtime.
+3. Expected: HTTP 403, `SHARE_MISSING`; Bob's file never enters the Runtime.
 4. Show: backend receipt naming Alice, her Agent, Bob's resource, read, deny.
 
 ### C. Revocation
@@ -76,7 +76,7 @@ the document, so delegation cannot widen data access.
 | Step | You do | System does | Show judges |
 | --- | --- | --- | --- |
 | 1 | Create a protected resource the team needs, e.g. **Tokyo Travel Profile**. | Writes a server-owned `0600` file; returns metadata only. | The resource card; content is not displayed. |
-| 2 | Start a Team Task with a Lead, two specialists, the document, and **Authorize for this task**. | Records consent and creates separate `read + resource + task ID + expiry` capabilities for the selected specialists. | Green **Task access issued** event; no account-wide or Lead access. |
+| 2 | Start a Team Task with a Lead, the document, and **Authorize for this task**. Choose the specialists yourself or let the Lead choose. | For a user-picked roster, creates grants immediately. For a Lead-picked roster, the Lead plans without the file and grants are issued only after its final roster is validated. | **Plan set** before **Task access issued**; no candidate-wide or Lead access. |
 | 3 | Wait for the Lead's hand-off. | Validates the next Agent against the roster, then checks that specialist's capability before execution. | `coordination_plan`, delegation, then **Access decision · ALLOW**. |
 | 4 | Let both specialists contribute. | Mounts the file read-only for each approved disposable turn and returns actor-labelled results to the Lead. | Answer uses real protected constraints; the Lead sees the transcript, not the file. |
 | 5 | Let the Lead complete, or press **Stop**. | Releases the roster and revokes every task capability. | **Task access closed** event and revoked `task-scoped` entries under Access leases. |
@@ -90,7 +90,9 @@ outside that task.
 
 | Case | Action | Expected result |
 | --- | --- | --- |
-| Manual approval | Choose **Require manual approval** and start without leases. | First specialist turn refused, `GRANT_MISSING`, task paused, no container run; issue leases and Resume. |
+| Inline step-up | Choose **Ask me when needed** and start without leases. | First specialist is denied with `GRANT_MISSING`; an approval card appears in chat before Runtime. **Allow once** resumes automatically and the grant is revoked after that turn. |
+| Roster approval | On the same card choose **Allow current roster**. | Separate task-bound grants are created for the finalized roster; later members proceed without repeated prompts. |
+| Human denial | Choose **Deny & stop request**. | The request ends, the denial is hash-chained, no specialist Runtime starts, and no file is mounted. |
 | Wrong task context | Try to reuse an automatic task grant in Playground or another task. | `GRANT_MISSING`; a task-bound grant is ignored outside its task ID. |
 | Partial leases | Lease only one of two specialists. | The task pauses again when the Lead reaches the un-leased Agent. |
 | Revoked mid-task | Revoke a lease while the task is running. | The next specialist turn is refused with `GRANT_REVOKED` and the task pauses. |

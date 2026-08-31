@@ -19,7 +19,10 @@ flowchart LR
   Coordinator --> Lead["Lead Agent session"]
   Lead -->|"validated plan, delegation, or completion"| Coordinator
   Coordinator --> Policy{"specialist + read + resource + task + time"}
-  Policy -->|deny| Pause["Pause request and keep roster reserved"]
+  Policy -->|step-up needed| Approval["Inline human approval"]
+  Approval -->|deny| Pause["Stop request; no specialist Runtime"]
+  Approval -->|allow| Policy
+  Policy -->|other deny| Pause["Pause request and keep roster reserved"]
   Policy -->|allow| Runtime["Disposable specialist Runtime"]
   Runtime --> Workspace["Shared task workspace"]
   Runtime -->|"actor-labelled contribution"| Coordinator
@@ -39,9 +42,17 @@ sequenceDiagram
   User->>UI: Submit objective and team
   UI->>C: Create Team Task
   C->>C: Reserve Agents and persist task_started + user_message
-  C->>L: Ask for the most useful first conversational turn
-  L-->>C: Select one relevant specialist and assignment
+  C->>L: Plan using objective and Agent descriptions only
+  L-->>C: Commit final roster and select the first specialist
   C->>C: Validate the Agent against the authorized pool
+  opt Authorize for this task
+    C->>C: Issue task-bound grants to final roster
+  end
+  opt Ask me when needed
+    C-->>UI: Pause with structured access request
+    User->>UI: Allow once, Agent, or roster
+    UI->>C: Resolve approval from authenticated session
+  end
   C->>A: Run the first assignment
   A-->>C: Return contribution and activity evidence
   C->>L: Provide the updated actor-labelled transcript
@@ -64,6 +75,10 @@ the genuine collaboration remains understandable while it runs.
 ## Coordination guarantees
 
 - The server, not the browser, chooses the active Agent and owns all transitions.
+- A Lead-selected roster is finalized before protected capabilities are issued;
+  the Lead never receives a protected mount.
+- Step-up approval is created by middleware, persisted across reloads, and
+  resolved by the authenticated human before the blocked specialist continues.
 - Only selected, ready Agents can participate; they are reserved for the task.
 - Every delegation explicitly names one selected specialist; out-of-pool IDs fail validation.
 - At least two distinct specialists contribute when the authorized pool contains two or more.

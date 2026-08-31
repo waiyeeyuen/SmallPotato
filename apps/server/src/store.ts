@@ -71,6 +71,9 @@ function normalizeDatabase(database: Database): Database {
       ownerUserId: task.ownerUserId ?? "user-alice",
       resourceId: task.resourceId ?? null,
       resourceAccessMode: task.resourceAccessMode ?? "manual",
+      pendingAccessApproval: task.pendingAccessApproval ?? null,
+      oneTimeAccessGrantIds: task.oneTimeAccessGrantIds ?? [],
+      oneTimeAccessAgentId: task.oneTimeAccessAgentId ?? null,
       agentSelection: task.agentSelection ?? "user",
       rosterLocked:
         task.rosterLocked ??

@@ -15,6 +15,7 @@ import type {
   RequestActor,
   RunnerMount,
   RunnerResult,
+  TeamAccessApprovalDecision,
   TeamResourceAccessMode,
   TeamTask,
   TeamTaskEvent,
@@ -27,6 +28,8 @@ const MAX_COLLABORATION_ROUNDS = 12;
 const MAX_CONTRIBUTION_LENGTH = 20_000;
 const MAX_HISTORY_LENGTH = 32_000;
 const MAX_HISTORY_EVENTS = 80;
+const ACCESS_APPROVAL_TTL_MS = 15 * 60 * 1000;
+const ONE_TIME_GRANT_TTL_SECONDS = 5 * 60;
 const now = () => new Date().toISOString();
 
 // A generic mention of a protected document ("Bob's document", "the shared file",
@@ -120,9 +123,13 @@ export class TeamTaskService {
   ) {}
 
   async initialize(): Promise<void> {
-    await this.store.mutate((database) => {
+    const oneTimeGrantIds = await this.store.mutate((database) => {
+      const grantIds: string[] = [];
       for (const task of database.teamTasks) {
         if (task.status !== "running") continue;
+        grantIds.push(...task.oneTimeAccessGrantIds);
+        task.oneTimeAccessGrantIds = [];
+        task.oneTimeAccessAgentId = null;
         task.status = "paused";
         task.currentAgentId = null;
         task.assignmentQueue = [];
@@ -131,7 +138,9 @@ export class TeamTaskService {
         task.updatedAt = now();
         this.addEvent(database, task, "task_paused", null, task.lastError);
       }
+      return grantIds;
     });
+    await this.security.revokeGrantIds(oneTimeGrantIds);
   }
 
   /** Team Tasks belonging to the actor. Agents, tasks, and their conversation
@@ -234,12 +243,10 @@ export class TeamTaskService {
       requiredResource && ownsRequiredResource
         ? input.resourceAccessMode ?? "manual"
         : "manual";
-    if (requiredResource && agentSelection === "lead") {
-      throw new HttpError(
-        400,
-        "Attach a protected resource only when you choose the specialists yourself, so every participant can be authorized before the task starts.",
-        { code: "RESOURCE_WITH_LEAD_SELECTION" },
-      );
+    if (requiredResource && this.config.runtimeProvider !== "container") {
+      throw new HttpError(409, "Protected resources require the disposable container Runtime", {
+        code: "RESOURCE_RUNTIME_UNAVAILABLE",
+      });
     }
 
     const timestamp = now();
@@ -256,6 +263,9 @@ export class TeamTaskService {
       leadAgentId: input.leadAgentId,
       resourceId: requiredResource?.resourceId ?? null,
       resourceAccessMode,
+      pendingAccessApproval: null,
+      oneTimeAccessGrantIds: [],
+      oneTimeAccessAgentId: null,
       specialistAgentIds: specialistIds,
       agentSelection,
       rosterLocked: agentSelection === "user",
@@ -285,13 +295,16 @@ export class TeamTaskService {
       throw new HttpError(409, "End the existing Team conversation first");
     }
     this.validateAvailableAgents(actor, participantIds);
-    // Manual mode: every specialist must already be authorized (an owner's
-    // capability lease, or a cross-user share) before anything is provisioned —
-    // the first denial aborts the task with nothing created. Task mode instead
-    // mints task-scoped leases below (issueTaskAccess) for a resource the actor
-    // owns, so the pre-flight would be redundant there.
-    if (requiredResource && resourceAccessMode === "manual") {
-      await this.preflightResourceAccess(actor, requiredResource.resourceId, specialistIds);
+    // An external file must already be shared to the human before a Team exists;
+    // Alice cannot approve Bob's file on Bob's behalf. An owned file in manual
+    // mode is intentionally *not* preflighted: the middleware pauses at the
+    // exact specialist boundary and asks inline instead.
+    if (requiredResource && !ownsRequiredResource) {
+      await this.preflightExternalResourceAccess(
+        actor,
+        requiredResource.resourceId,
+        specialistIds[0]!,
+      );
     }
     await this.workspaces.createTeamTaskWorkspace(task);
     await this.store.mutate((database) => {
@@ -339,8 +352,15 @@ export class TeamTaskService {
       throw new HttpError(409, "The Team is not ready for another message");
     }
     const requiredResource = this.resolveRequiredResource(actor, content, resourceId ?? null);
-    if (requiredResource && current.resourceAccessMode === "manual") {
-      await this.preflightResourceAccess(actor, requiredResource.resourceId, current.specialistAgentIds);
+    const requiredSummary = requiredResource
+      ? this.security.listResources(actor).find((item) => item.id === requiredResource.resourceId)
+      : null;
+    if (requiredResource && !requiredSummary?.ownedByCurrentUser) {
+      await this.preflightExternalResourceAccess(
+        actor,
+        requiredResource.resourceId,
+        current.specialistAgentIds[0]!,
+      );
     }
     if (current.resourceId !== (requiredResource?.resourceId ?? null)) {
       await this.revokeTaskAccess(current);
@@ -353,6 +373,9 @@ export class TeamTaskService {
       }
       stored.objective = content.trim();
       stored.resourceId = requiredResource?.resourceId ?? null;
+      stored.pendingAccessApproval = null;
+      stored.oneTimeAccessGrantIds = [];
+      stored.oneTimeAccessAgentId = null;
       stored.turnPolicy = null;
       stored.status = "running";
       stored.currentAgentId = stored.leadAgentId;
@@ -388,7 +411,7 @@ export class TeamTaskService {
 
   async cancelRequest(actor: RequestActor, id: string): Promise<TeamTask> {
     const activeAgentId = this.getTask(actor, id).currentAgentId;
-    const task = await this.store.mutate((database) => {
+    const outcome = await this.store.mutate((database) => {
       const stored = this.findTask(database, id);
       this.assertOwner(stored, actor);
       if (!["running", "paused"].includes(stored.status)) {
@@ -399,16 +422,21 @@ export class TeamTaskService {
       stored.currentAssignment = null;
       stored.assignmentQueue = [];
       stored.activeTurnStartedAt = null;
+      const oneTimeGrantIds = [...stored.oneTimeAccessGrantIds];
+      stored.pendingAccessApproval = null;
+      stored.oneTimeAccessGrantIds = [];
+      stored.oneTimeAccessAgentId = null;
       stored.lastError = null;
       stored.completedAt = now();
       stored.updatedAt = stored.completedAt;
       this.addEvent(database, stored, "request_cancelled", null, "Request cancelled by the user");
       stored.activeRequestSequence = null;
-      return structuredClone(stored);
+      return { task: structuredClone(stored), oneTimeGrantIds };
     });
     if (activeAgentId) await this.runner.cancel(activeAgentId);
     await this.activeExecutions.get(id)?.catch(() => undefined);
-    return task;
+    await this.security.revokeGrantIds(outcome.oneTimeGrantIds);
+    return outcome.task;
   }
 
   async stopTask(actor: RequestActor, id: string): Promise<TeamTask> {
@@ -424,6 +452,9 @@ export class TeamTaskService {
       stored.currentAssignment = null;
       stored.assignmentQueue = [];
       stored.activeTurnStartedAt = null;
+      stored.pendingAccessApproval = null;
+      stored.oneTimeAccessGrantIds = [];
+      stored.oneTimeAccessAgentId = null;
       stored.activeRequestSequence = null;
       stored.completedAt = now();
       stored.updatedAt = stored.completedAt;
@@ -439,6 +470,13 @@ export class TeamTaskService {
 
   async resumeTask(actor: RequestActor, id: string): Promise<TeamTask> {
     const paused = this.getTask(actor, id);
+    if (paused.pendingAccessApproval) {
+      throw new HttpError(409, "Approve or deny the pending document access request first", {
+        code: "ACCESS_APPROVAL_PENDING",
+        requestId: paused.pendingAccessApproval.id,
+      });
+    }
+    await this.activeExecutions.get(id)?.catch(() => undefined);
     if (
       paused.resourceId
       && paused.resourceAccessMode === "task"
@@ -464,6 +502,135 @@ export class TeamTaskService {
       stored.lastError = null;
       stored.updatedAt = now();
       this.addEvent(database, stored, "task_resumed", null, "Team Task resumed through the Lead");
+      return structuredClone(stored);
+    });
+    this.schedule(id);
+    return task;
+  }
+
+  /**
+   * Resolve a middleware-generated step-up request. The browser supplies only
+   * the opaque request id and decision; task ownership, Agent principal,
+   * resource, assignment, and grant scope are all recovered server-side.
+   */
+  async resolveAccessApproval(
+    actor: RequestActor,
+    id: string,
+    requestId: string,
+    decision: TeamAccessApprovalDecision,
+  ): Promise<TeamTask> {
+    const paused = this.getTask(actor, id);
+    const approval = paused.pendingAccessApproval;
+    if (!approval || approval.id !== requestId) {
+      throw new HttpError(409, "This document access request is no longer pending", {
+        code: "ACCESS_APPROVAL_STALE",
+      });
+    }
+    if (paused.status !== "paused") {
+      throw new HttpError(409, "Document access can be decided only while the task is paused");
+    }
+    // The pause is persisted from inside the active run loop. Wait for that loop
+    // to unwind so the automatic continuation cannot be lost to schedule's
+    // duplicate-execution guard.
+    await this.activeExecutions.get(id)?.catch(() => undefined);
+    if (Date.parse(approval.expiresAt) <= Date.now()) {
+      await this.store.mutate((database) => {
+        const task = this.findTask(database, id);
+        this.assertOwner(task, actor);
+        if (task.pendingAccessApproval?.id !== requestId) return;
+        task.pendingAccessApproval = null;
+        task.lastError = "The document access request expired. Resume to let the Lead choose the next step.";
+        task.updatedAt = now();
+        this.addEvent(
+          database,
+          task,
+          "access_approval_expired",
+          approval.agentId,
+          "The pending read approval expired without granting access.",
+          approval.assignment,
+        );
+      });
+      throw new HttpError(409, "This document access request has expired", {
+        code: "ACCESS_APPROVAL_EXPIRED",
+      });
+    }
+
+    if (decision === "deny") {
+      const denied = await this.store.mutate((database) => {
+        const task = this.findTask(database, id);
+        this.assertOwner(task, actor);
+        if (task.pendingAccessApproval?.id !== requestId) {
+          throw new HttpError(409, "This document access request is no longer pending");
+        }
+        const agent = database.agents.find((item) => item.id === approval.agentId);
+        const resource = database.resources.find((item) => item.id === approval.resourceId);
+        task.pendingAccessApproval = null;
+        task.status = "ready";
+        task.currentAgentId = null;
+        task.currentAssignment = null;
+        task.assignmentQueue = [];
+        task.activeTurnStartedAt = null;
+        task.lastError = `${actor.displayName} denied ${agent?.name ?? "the Agent"} read access to ${resource?.name ?? "the protected document"}.`;
+        task.completedAt = now();
+        task.updatedAt = task.completedAt;
+        this.addEvent(
+          database,
+          task,
+          "access_approval_denied",
+          approval.agentId,
+          `${actor.displayName} denied the read request. No Runtime started and the document was not mounted.`,
+          approval.assignment,
+        );
+        this.addEvent(database, task, "request_failed", null, task.lastError);
+        task.activeRequestSequence = null;
+        return structuredClone(task);
+      });
+      return denied;
+    }
+
+    const requestedAgent = this.getAgent(approval.agentId);
+    const grantAgents = decision === "allow_roster_task"
+      ? paused.specialistAgentIds.map((agentId) => this.getAgent(agentId))
+      : [requestedAgent];
+    const ttlSeconds = decision === "allow_once" ? ONE_TIME_GRANT_TTL_SECONDS : 30 * 60;
+    const { grants } = await this.security.ensureTaskGrants(
+      actor,
+      grantAgents,
+      approval.resourceId,
+      paused.id,
+      ttlSeconds,
+    );
+    const task = await this.store.mutate((database) => {
+      const stored = this.findTask(database, id);
+      this.assertOwner(stored, actor);
+      if (stored.pendingAccessApproval?.id !== requestId || stored.status !== "paused") {
+        throw new HttpError(409, "This document access request is no longer pending");
+      }
+      this.ensureAgentsReserved(database, stored);
+      stored.pendingAccessApproval = null;
+      stored.oneTimeAccessGrantIds = decision === "allow_once" ? grants.map((grant) => grant.id) : [];
+      stored.oneTimeAccessAgentId = decision === "allow_once" ? approval.agentId : null;
+      stored.status = "running";
+      stored.currentAgentId = approval.agentId;
+      stored.currentAssignment = approval.assignment;
+      stored.assignmentQueue = [];
+      stored.activeTurnStartedAt = null;
+      stored.lastError = null;
+      stored.updatedAt = now();
+      const scope = decision === "allow_once"
+        ? "one specialist turn"
+        : decision === "allow_agent_task"
+          ? "this Agent for the rest of the Team Task"
+          : `all ${grantAgents.length} specialists for the rest of the Team Task`;
+      this.addEvent(
+        database,
+        stored,
+        "access_approval_granted",
+        approval.agentId,
+        `${actor.displayName} approved read-only access for ${scope}. The blocked specialist will now continue automatically.`,
+        approval.assignment,
+      );
+      this.addEvent(database, stored, "task_resumed", null, "Team Task resumed at the approved specialist boundary");
       return structuredClone(stored);
     });
     this.schedule(id);
@@ -629,6 +796,7 @@ export class TeamTaskService {
         task.lastError = lastError;
         task.updatedAt = now();
       });
+      await this.consumeOneTimeAccess(initialTask.id, agent.id);
     }
     return null;
   }
@@ -735,6 +903,29 @@ export class TeamTaskService {
       task.lastError = null;
       task.updatedAt = now();
     });
+    await this.consumeOneTimeAccess(taskId, agentId);
+  }
+
+  private async consumeOneTimeAccess(taskId: string, agentId: string): Promise<void> {
+    const grantIds = await this.store.mutate((database) => {
+      const task = this.findTask(database, taskId);
+      if (task.oneTimeAccessAgentId !== agentId || task.oneTimeAccessGrantIds.length === 0) {
+        return [];
+      }
+      const ids = [...task.oneTimeAccessGrantIds];
+      task.oneTimeAccessGrantIds = [];
+      task.oneTimeAccessAgentId = null;
+      task.updatedAt = now();
+      this.addEvent(
+        database,
+        task,
+        "access_approval_consumed",
+        agentId,
+        "The one-turn read approval was consumed and its capability was revoked.",
+      );
+      return ids;
+    });
+    await this.security.revokeGrantIds(grantIds);
   }
 
   private buildPrompt(task: TeamTask, agent: Agent, isLead: boolean): string {
@@ -1249,6 +1440,10 @@ export class TeamTaskService {
   private async issueTaskAccess(task: TeamTask): Promise<void> {
     if (!task.resourceId || task.resourceAccessMode !== "task") return;
     const actor = this.actorForTask(task);
+    const resource = this.security.listResources(actor).find((item) => item.id === task.resourceId);
+    // A cross-user share is already a user-level authorization from the owner;
+    // the grantee cannot mint task capabilities over somebody else's file.
+    if (!resource?.ownedByCurrentUser) return;
     const agents = task.specialistAgentIds.map((id) => this.getAgent(id));
     const { grants, issuedCount } = await this.security.ensureTaskGrants(
       actor,
@@ -1289,7 +1484,8 @@ export class TeamTaskService {
    * Decide whether a Team Task needs a protected resource before it starts.
    *
    * A resource is *required* only when it's explicitly attached in the picker —
-   * that returns `{resourceId, resourceName}` and `preflightResourceAccess` runs.
+   * that returns `{resourceId, resourceName}`. External resources are checked
+   * for an active human-to-human share before the Team is provisioned.
    *
    * When nothing is attached but the objective still *refers* to a protected
    * document — it names one in the catalog (plural-tolerant), or uses a generic
@@ -1384,47 +1580,42 @@ export class TeamTaskService {
   }
 
   /**
-   * Authorize every specialist against the required resource *before* the task
-   * is created. The first denial throws `RESOURCE_ACCESS_DENIED` and nothing is
-   * provisioned — the Lead never runs, so no hand-off happens. Each turn is
-   * re-checked later by `authorizeSpecialistTurn` to catch a mid-task revocation.
+   * Verify a cross-user file is actively shared before creating the Team. Share
+   * authority is human-to-human, so checking one owned Agent is sufficient; all
+   * specialist turns are still re-checked before their Runtime starts.
    */
-  private async preflightResourceAccess(
+  private async preflightExternalResourceAccess(
     actor: RequestActor,
     resourceId: string,
-    specialistIds: string[],
+    specialistId: string,
   ): Promise<void> {
     if (this.config.runtimeProvider !== "container") {
       throw new HttpError(409, "Protected resources require the disposable container Runtime", {
         code: "RESOURCE_RUNTIME_UNAVAILABLE",
       });
     }
-    const agents = this.store.snapshot().agents;
-    for (const id of specialistIds) {
-      const agent = agents.find((item) => item.id === id);
-      if (!agent) throw new HttpError(404, "Selected Agent not found");
-      const { decision, resource } = await this.security.authorizeResourceRead(
-        actor,
-        agent,
-        resourceId,
+    const agent = this.store.snapshot().agents.find((item) => item.id === specialistId);
+    if (!agent) throw new HttpError(404, "Selected Agent not found");
+    const { decision, resource } = await this.security.authorizeResourceRead(
+      actor,
+      agent,
+      resourceId,
+    );
+    if (!resource) {
+      throw new HttpError(
+        403,
+        `Team Task blocked: “${decision.resourceName}” is not shared with ${actor.displayName} ` +
+          `(${decision.reason}). Ask its owner to share it, then start the task again.`,
+        {
+          code: "RESOURCE_ACCESS_DENIED",
+          reason: decision.reason,
+          decisionId: decision.id,
+          resourceId,
+          resourceName: decision.resourceName,
+          agentId: agent.id,
+          agentName: agent.name,
+        },
       );
-      if (!resource) {
-        throw new HttpError(
-          403,
-          `Team Task blocked: ${agent.name} cannot read “${decision.resourceName}” ` +
-            `(${decision.reason}). Give the owner's Agents this file via a capability lease, ` +
-            `or have the owner share it, then start the task again.`,
-          {
-            code: "RESOURCE_ACCESS_DENIED",
-            reason: decision.reason,
-            decisionId: decision.id,
-            resourceId,
-            resourceName: decision.resourceName,
-            agentId: agent.id,
-            agentName: agent.name,
-          },
-        );
-      }
     }
   }
 
@@ -1461,9 +1652,16 @@ export class TeamTaskService {
     const receipt = (decision.receiptHash ?? decision.id).slice(0, 8);
 
     if (!resource) {
-      const reason =
-        agent.name + " was denied read access to the protected resource (" + decision.reason +
-        "). Issue a capability lease for this Agent, then resume the task.";
+      const canRequestApproval =
+        task.resourceAccessMode === "manual" &&
+        decision.resourceOwnerUserId === task.ownerUserId &&
+        ["GRANT_MISSING", "GRANT_REVOKED", "GRANT_EXPIRED"].includes(decision.reason);
+      if (canRequestApproval) {
+        await this.requestInlineAccessApproval(task, agent, decision.resourceName, decision.reason, receipt);
+        return null;
+      }
+      const reason = agent.name + " was denied read access to the protected resource (" +
+        decision.reason + "). The document owner must restore access before this request can continue.";
       await this.store.mutate((database) => {
         const stored = this.findTask(database, task.id);
         this.addEvent(
@@ -1501,6 +1699,53 @@ export class TeamTaskService {
         "",
       ].join("\n"),
     };
+  }
+
+  private async requestInlineAccessApproval(
+    task: TeamTask,
+    agent: Agent,
+    resourceName: string,
+    policyReason: string,
+    receipt: string,
+  ): Promise<void> {
+    const createdAt = now();
+    const approval = {
+      id: randomUUID(),
+      taskId: task.id,
+      agentId: agent.id,
+      resourceId: task.resourceId!,
+      action: "read" as const,
+      assignment: task.currentAssignment ?? "Contribute to the Team Task",
+      createdAt,
+      expiresAt: new Date(Date.now() + ACCESS_APPROVAL_TTL_MS).toISOString(),
+    };
+    await this.store.mutate((database) => {
+      const stored = this.findTask(database, task.id);
+      if (stored.status !== "running" || stored.currentAgentId !== agent.id) return;
+      this.addEvent(
+        database,
+        stored,
+        "resource_authorization",
+        agent.id,
+        `DENY · ${agent.name} was refused read access (${policyReason}). Receipt ${receipt}.`,
+      );
+      stored.pendingAccessApproval = approval;
+      stored.status = "paused";
+      stored.currentAgentId = null;
+      stored.assignmentQueue = [];
+      stored.activeTurnStartedAt = null;
+      stored.lastError = `Your approval is required before ${agent.name} can read ${resourceName}.`;
+      stored.updatedAt = createdAt;
+      this.addEvent(
+        database,
+        stored,
+        "access_approval_requested",
+        agent.id,
+        `PotatoGuard blocked ${agent.name} before execution and requested read-only access to ${resourceName}.`,
+        approval.assignment,
+      );
+      this.addEvent(database, stored, "task_paused", null, stored.lastError);
+    });
   }
 
   private async pauseTask(id: string, reason: string): Promise<void> {

@@ -31,6 +31,10 @@ const teamMessageBody = z.object({
   content: z.string().trim().min(1).max(20_000),
   resourceId: z.string().trim().min(1).max(120).optional(),
 }).strict();
+const accessApprovalBody = z.object({
+  requestId: z.string().uuid(),
+  decision: z.enum(["allow_once", "allow_agent_task", "allow_roster_task", "deny"]),
+}).strict();
 const createTeamTaskBody = z.object({
   objective: z.string().trim().min(1).max(20_000),
   leadAgentId: z.string().uuid(),
@@ -320,6 +324,19 @@ export async function createApp(
     app.post("/api/team-tasks/:id/resume", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
       return { task: await teamTasks.resumeTask(await actorFor(request), id) };
+    });
+
+    app.post("/api/team-tasks/:id/access-approval", async (request) => {
+      const { id } = teamTaskIdParams.parse(request.params);
+      const body = accessApprovalBody.parse(request.body);
+      return {
+        task: await teamTasks.resolveAccessApproval(
+          await actorFor(request),
+          id,
+          body.requestId,
+          body.decision,
+        ),
+      };
     });
   }
 

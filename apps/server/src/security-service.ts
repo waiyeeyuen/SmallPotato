@@ -571,6 +571,22 @@ export class SecurityService {
     });
   }
 
+  /** Revoke the exact short-lived grants backing a one-turn approval. */
+  async revokeGrantIds(grantIds: string[]): Promise<number> {
+    const ids = new Set(grantIds);
+    if (ids.size === 0) return 0;
+    return this.store.mutate((database) => {
+      const timestamp = now();
+      let revoked = 0;
+      for (const grant of database.grants) {
+        if (!ids.has(grant.id) || grant.revokedAt) continue;
+        grant.revokedAt = timestamp;
+        revoked += 1;
+      }
+      return revoked;
+    });
+  }
+
   async revokeGrant(actor: RequestActor, agent: Agent, grantId: string) {
     this.requireAgentOwner(actor, agent);
     return this.store.mutate((database) => {

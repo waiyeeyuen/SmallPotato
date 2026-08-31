@@ -42,19 +42,17 @@ test("records the policy-governed Team Task story", async ({ page, context }) =>
   await expect(page.locator(".chain-ok")).toHaveText("Hash chain verified");
   await page.waitForTimeout(READ);
 
-  // Success: explicit task consent creates separate task-bound specialist grants.
+  // Success: the Lead locks the roster before an inline human approval creates
+  // separate task-bound specialist grants.
   await page.getByRole("button", { name: /Team tasks/ }).click();
   await expect(page.getByRole("heading", { name: "Team Tasks" })).toBeVisible();
   const objective = page.getByLabel("What should the team do?");
   await expect(objective).toBeVisible();
   await objective.fill(OBJECTIVE);
   await chooseOption(page.getByLabel("Lead agent"), LEAD);
+  await page.getByText("The Lead picks them", { exact: true }).click();
   await page.getByLabel("Protected document (optional)").selectOption({ label: `${PROFILE} · yours` });
-  await expect(page.getByText("Authorize for this task", { exact: true })).toBeVisible();
-  for (const name of SPECIALISTS) {
-    await page.locator(".team-member-picker label.team-choice", { hasText: name })
-      .locator('input[type="checkbox"]').check();
-  }
+  await page.getByText("Ask me when needed", { exact: true }).click();
   await page.waitForTimeout(READ);
   await page.getByRole("button", { name: "Start task" }).click();
 
@@ -63,19 +61,26 @@ test("records the policy-governed Team Task story", async ({ page, context }) =>
     return tasks[0]?.id ?? "";
   }, { timeout: 60_000 }).not.toBe("").then(async () => (await api("/api/team-tasks")).tasks[0].id as string);
 
-  await expect(page.getByText("Task-scoped read access active", { exact: false }))
-    .toBeVisible({ timeout: 60_000 });
+  const approval = page.locator(".team-access-request");
+  await expect(approval).toContainText("blocked before execution", { timeout: 60_000 });
+  await expect(approval).toContainText("The document has not been mounted");
+  await page.waitForTimeout(READ);
+  await approval.getByRole("button", { name: "Allow current roster" }).click();
+
   await expect.poll(async () => {
     const body = await api(`/api/team-tasks/${taskId}`);
-    return body.events.some((event: { type: string; content: string }) =>
-      event.type === "resource_authorization" && event.content.startsWith("ALLOW"));
+    const types = body.events.map((event: { type: string }) => event.type);
+    return types.includes("access_approval_granted") && body.events.some(
+      (event: { type: string; content: string }) =>
+        event.type === "resource_authorization" && event.content.startsWith("ALLOW"),
+    );
   }, { timeout: 10 * 60 * 1000 }).toBe(true);
   await expect(page.locator(".team-note-allow").first()).toBeVisible();
   await page.waitForTimeout(READ);
 
   await expect.poll(async () => (await api(`/api/team-tasks/${taskId}`)).task.status, {
     timeout: 10 * 60 * 1000,
-  }).toBe("completed");
+  }).toBe("ready");
   await page.reload();
   await page.getByRole("button", { name: /Team tasks/ }).click();
   const activity = page.locator("details.team-panel").filter({ hasText: "Activity log" }).first();

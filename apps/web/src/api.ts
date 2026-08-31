@@ -10,6 +10,7 @@ import type {
   SystemInfo,
   TeamTask,
   TeamTaskEvent,
+  TeamAccessApprovalDecision,
   User,
 } from "./types";
 
@@ -111,6 +112,15 @@ export const api = {
     request<{ task: TeamTask }>("/api/team-tasks/" + id + "/stop", { method: "POST" }),
   resumeTeamTask: (id: string) =>
     request<{ task: TeamTask }>("/api/team-tasks/" + id + "/resume", { method: "POST" }),
+  resolveTeamAccessApproval: (
+    id: string,
+    requestId: string,
+    decision: TeamAccessApprovalDecision,
+  ) =>
+    request<{ task: TeamTask }>("/api/team-tasks/" + id + "/access-approval", {
+      method: "POST",
+      body: JSON.stringify({ requestId, decision }),
+    }),
   resources: () => request<{ resources: ResourceSummary[] }>("/api/resources"),
   createResource: (body: { name: string; description: string; content: string }) =>
     request<{ resource: ResourceSummary }>("/api/resources", {

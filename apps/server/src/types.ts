@@ -19,6 +19,11 @@ export type TeamTaskTurnPolicy = "facilitated" | "sequential";
  */
 export type TeamAgentSelection = "user" | "lead";
 export type TeamResourceAccessMode = "manual" | "task";
+export type TeamAccessApprovalDecision =
+  | "allow_once"
+  | "allow_agent_task"
+  | "allow_roster_task"
+  | "deny";
 export type TeamTaskEventType =
   | "task_started"
   | "user_message"
@@ -30,6 +35,11 @@ export type TeamTaskEventType =
   | "turn_retry"
   | "turn_failed"
   | "resource_authorization"
+  | "access_approval_requested"
+  | "access_approval_granted"
+  | "access_approval_denied"
+  | "access_approval_consumed"
+  | "access_approval_expired"
   | "task_access_granted"
   | "task_access_revoked"
   | "task_paused"
@@ -115,6 +125,14 @@ export interface TeamTask {
    */
   resourceAccessMode: TeamResourceAccessMode;
   /**
+   * Middleware-generated step-up request. The model never creates or resolves
+   * this object, and no protected Runtime starts while it is present.
+   */
+  pendingAccessApproval: TeamAccessApprovalRequest | null;
+  /** A single-turn approval is revoked after the blocked specialist finishes. */
+  oneTimeAccessGrantIds: string[];
+  oneTimeAccessAgentId: string | null;
+  /**
    * When agentSelection is "user" this is the fixed specialist pool. When it is
    * "lead" this starts as every reserved candidate Agent and is narrowed to the
    * Lead's chosen roster once the Lead's first-turn plan is applied.
@@ -143,6 +161,17 @@ export interface TeamTask {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+}
+
+export interface TeamAccessApprovalRequest {
+  id: string;
+  taskId: string;
+  agentId: string;
+  resourceId: string;
+  action: "read";
+  assignment: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export interface TeamAssignment {

@@ -26,6 +26,7 @@ describe("HTTP boundary", () => {
     const readActors: unknown[] = [];
     const messageArgs: unknown[] = [];
     const cancelActors: unknown[] = [];
+    const approvalArgs: unknown[] = [];
     const teamTasks = {
       createTask: async (actor: unknown, input: unknown) => {
         createActors.push(actor);
@@ -39,6 +40,7 @@ describe("HTTP boundary", () => {
       verifyEventChain: (actor: unknown) => { readActors.push(actor); return true; },
       sendMessage: async (...args: unknown[]) => { messageArgs.push(args); return task; },
       cancelRequest: async (actor: unknown) => { cancelActors.push(actor); return task; },
+      resolveAccessApproval: async (...args: unknown[]) => { approvalArgs.push(args); return task; },
     } as unknown as TeamTaskService;
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service, security, teamTasks);
     const invalid = await app.inject({ method: "POST", url: "/api/team-tasks", payload: { objective: "Ship", leadAgentId: "bad", specialistAgentIds: [] } });
@@ -120,6 +122,21 @@ describe("HTTP boundary", () => {
     const cancelled = await app.inject({ method: "POST", url: "/api/team-tasks/" + task.id + "/cancel" });
     expect(cancelled.statusCode).toBe(200);
     expect(cancelActors[0]).toMatchObject({ userId: expect.any(String) });
+    const approval = await app.inject({
+      method: "POST",
+      url: "/api/team-tasks/" + task.id + "/access-approval",
+      payload: {
+        requestId: "00000000-0000-4000-8000-000000000005",
+        decision: "allow_once",
+      },
+    });
+    expect(approval.statusCode).toBe(200);
+    expect(approvalArgs[0]).toEqual([
+      expect.objectContaining({ userId: "user-alice" }),
+      task.id,
+      "00000000-0000-4000-8000-000000000005",
+      "allow_once",
+    ]);
     await app.close();
   });
 
@@ -134,6 +151,7 @@ describe("HTTP boundary", () => {
       verifyEventChain: () => { throw new Error("must not be reached"); },
       stopTask: () => { throw new Error("must not be reached"); },
       resumeTask: () => { throw new Error("must not be reached"); },
+      resolveAccessApproval: () => { throw new Error("must not be reached"); },
     } as unknown as TeamTaskService;
     const app = await createApp(
       loadConfig({ NODE_ENV: "test" }),
@@ -148,6 +166,14 @@ describe("HTTP boundary", () => {
       { method: "GET" as const, url: `/api/team-tasks/${taskId}` },
       { method: "POST" as const, url: `/api/team-tasks/${taskId}/stop` },
       { method: "POST" as const, url: `/api/team-tasks/${taskId}/resume` },
+      {
+        method: "POST" as const,
+        url: `/api/team-tasks/${taskId}/access-approval`,
+        payload: {
+          requestId: "00000000-0000-4000-8000-000000000005",
+          decision: "deny",
+        },
+      },
     ]) {
       const response = await app.inject(request);
       expect(response.statusCode).toBe(401);

@@ -990,7 +990,7 @@ describe("TeamTaskService", () => {
     expect(agents.getAgent(actor, b.id)).toMatchObject({ status: "busy", activeTeamTaskId: task.id });
   });
 
-  it("refuses to start — no Lead turn, no hand-off — when a specialist cannot read the protected resource", async () => {
+  it("pauses inline before Runtime and resumes automatically after a one-turn approval", async () => {
     const runner = new ScriptedRunner();
     const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
     const lead = await agents.createAgent(actor, { name: "Lead" });
@@ -1001,28 +1001,173 @@ describe("TeamTaskService", () => {
       content: "Priority one: ship the Runtime boundary.",
     });
 
-    await expect(
-      teamTasks.createTask(actor, {
-        objective: "Summarize the protected brief",
-        leadAgentId: lead.id,
-        specialistAgentIds: [analyst.id],
-        resourceId: resource.id,
-        resourceAccessMode: "manual",
-      }),
-    ).rejects.toMatchObject({
-      statusCode: 403,
-      details: { code: "RESOURCE_ACCESS_DENIED", reason: "GRANT_MISSING", agentName: "Analyst" },
+    runner.script.push(planFacilitated(analyst.id, "Read the protected brief and summarize it"));
+    const task = await teamTasks.createTask(actor, {
+      objective: "Summarize the protected brief",
+      leadAgentId: lead.id,
+      specialistAgentIds: [analyst.id],
+      resourceId: resource.id,
+      resourceAccessMode: "manual",
     });
-
-    // Nothing was provisioned: no task, no Runtime call, Agents still idle. A
-    // hash-chained deny receipt was still written for the attempt.
-    expect(teamTasks.listTasks(actor)).toHaveLength(0);
-    expect(runner.requests).toHaveLength(0);
-    expect(agents.getAgent(actor, analyst.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("paused");
+    const paused = teamTasks.getTask(actor, task.id);
+    expect(paused.pendingAccessApproval).toMatchObject({
+      agentId: analyst.id,
+      resourceId: resource.id,
+      action: "read",
+      assignment: "Read the protected brief and summarize it",
+    });
+    // The Lead planned, but the denied specialist never reached the Runtime.
+    expect(runner.requests.map((request) => request.agentId)).toEqual([lead.id]);
     expect(security.listDecisions(actor, agents.getAgent(actor, analyst.id))[0]).toMatchObject({
       outcome: "deny",
       reason: "GRANT_MISSING",
     });
+
+    runner.script.push(
+      specialist("Priority one is the Runtime boundary.", "Read the approved brief."),
+      complete("The brief prioritises the Runtime boundary."),
+    );
+    await teamTasks.resolveAccessApproval(
+      actor,
+      task.id,
+      paused.pendingAccessApproval!.id,
+      "allow_once",
+    );
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("ready");
+    expect(runner.requests.map((request) => request.agentId)).toEqual([lead.id, analyst.id, lead.id]);
+    expect(runner.requests[1]?.mounts).toEqual([
+      { sourcePath: expect.any(String), targetPath: `/authorized-resources/${resource.id}.txt`, readOnly: true },
+    ]);
+    expect(security.listGrants(actor, agents.getAgent(actor, analyst.id))).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "team_task", teamTaskId: task.id, state: "revoked" }),
+      ]),
+    );
+    expect(teamTasks.getEvents(actor, task.id).map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "access_approval_requested",
+        "access_approval_granted",
+        "access_approval_consumed",
+      ]),
+    );
+  });
+
+  it("lets the Lead choose a protected-task roster before task capabilities are issued", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+    const reviewer = await agents.createAgent(actor, { name: "Reviewer" });
+    const resource = await security.createResource(actor, {
+      name: "Travel Profile",
+      description: "Private constraints",
+      content: "Budget: SGD 2,800.",
+    });
+    runner.script.push(
+      planFacilitated(analyst.id, "Read the profile", {
+        rosterAgentIds: [analyst.name, reviewer.name],
+      }),
+      specialist("The budget is SGD 2,800."),
+      delegate(reviewer.id, "Check the budget constraint"),
+      specialist("The budget constraint is confirmed."),
+      complete("The protected profile was checked by both specialists."),
+    );
+
+    const task = await teamTasks.createTask(actor, {
+      objective: "Review the protected travel profile",
+      leadAgentId: lead.id,
+      specialistAgentIds: [],
+      agentSelection: "lead",
+      resourceId: resource.id,
+      resourceAccessMode: "task",
+    });
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("ready");
+
+    const finished = teamTasks.getTask(actor, task.id);
+    expect(finished.specialistAgentIds).toEqual([analyst.id, reviewer.id]);
+    expect(
+      runner.requests
+        .filter((request) => request.agentId === lead.id)
+        .every((request) => request.mounts === undefined),
+    ).toBe(true);
+    const eventTypes = teamTasks.getEvents(actor, task.id).map((event) => event.type);
+    expect(eventTypes.indexOf("coordination_plan")).toBeLessThan(eventTypes.indexOf("task_access_granted"));
+    expect(eventTypes.indexOf("task_access_granted")).toBeLessThan(eventTypes.indexOf("resource_authorization"));
+    for (const specialistAgent of [analyst, reviewer]) {
+      expect(security.listGrants(actor, agents.getAgent(actor, specialistAgent.id))).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "team_task", teamTaskId: task.id, state: "active" }),
+        ]),
+      );
+    }
+  });
+
+  it("can approve the current roster once and avoids repeated inline prompts", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+    const reviewer = await agents.createAgent(actor, { name: "Reviewer" });
+    const resource = await security.createResource(actor, {
+      name: "Launch Plan",
+      description: "Private plan",
+      content: "Launch on Friday.",
+    });
+    runner.script.push(planFacilitated(analyst.id, "Read the launch date"));
+    const task = await teamTasks.createTask(actor, {
+      objective: "Review the launch plan",
+      leadAgentId: lead.id,
+      specialistAgentIds: [analyst.id, reviewer.id],
+      resourceId: resource.id,
+      resourceAccessMode: "manual",
+    });
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("paused");
+    const approval = teamTasks.getTask(actor, task.id).pendingAccessApproval!;
+
+    runner.script.push(
+      specialist("The launch is Friday."),
+      delegate(reviewer.id, "Verify the launch date"),
+      specialist("Friday is confirmed."),
+      complete("Both specialists confirmed Friday."),
+    );
+    await teamTasks.resolveAccessApproval(actor, task.id, approval.id, "allow_roster_task");
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("ready");
+    expect(teamTasks.getEvents(actor, task.id).filter((event) => event.type === "access_approval_requested"))
+      .toHaveLength(1);
+    expect(runner.requests.filter((request) => [analyst.id, reviewer.id].includes(request.agentId)))
+      .toHaveLength(2);
+  });
+
+  it("denies inline access without starting the specialist Runtime and rejects a stale click", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+    const resource = await security.createResource(actor, {
+      name: "Sensitive Brief",
+      description: "Private brief",
+      content: "Restricted.",
+    });
+    runner.script.push(planFacilitated(analyst.id, "Read the sensitive brief"));
+    const task = await teamTasks.createTask(actor, {
+      objective: "Review the sensitive brief",
+      leadAgentId: lead.id,
+      specialistAgentIds: [analyst.id],
+      resourceId: resource.id,
+      resourceAccessMode: "manual",
+    });
+    await expect.poll(() => teamTasks.getTask(actor, task.id).status).toBe("paused");
+    const approval = teamTasks.getTask(actor, task.id).pendingAccessApproval!;
+    const denied = await teamTasks.resolveAccessApproval(actor, task.id, approval.id, "deny");
+    expect(denied).toMatchObject({ status: "ready", pendingAccessApproval: null });
+    expect(runner.requests.map((request) => request.agentId)).toEqual([lead.id]);
+    expect(teamTasks.getEvents(actor, task.id).map((event) => event.type)).toEqual(
+      expect.arrayContaining(["access_approval_denied", "request_failed"]),
+    );
+    await expect(
+      teamTasks.resolveAccessApproval(actor, task.id, approval.id, "allow_once"),
+    ).rejects.toMatchObject({ statusCode: 409, details: { code: "ACCESS_APPROVAL_STALE" } });
   });
 
   it("mounts the protected resource read-only for an authorized specialist turn only", async () => {

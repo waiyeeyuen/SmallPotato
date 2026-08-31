@@ -35,6 +35,9 @@ The submission includes:
 - Time-limited capability leases scoped to one Agent, action, and resource
 - One-click Team Task consent that issues separate task-bound capabilities to
   the specialist roster and revokes them automatically when the team ends
+- Inline step-up approval that pauses before a protected specialist Runtime,
+  offers one-turn, one-Agent, or roster-wide task access, and continues without
+  sending the user to a separate lease screen
 - Protected-resource create, metadata/content replacement, and safe deletion
 - Cross-user resource sharing: the owner grants another user read access to a
   chosen file (optional expiry, owner-only revoke); the grantee's Agents can then
@@ -154,12 +157,17 @@ create your own). Choose one Lead, one or more specialists, and describe a share
 objective. Optionally attach one of the signed-in user's protected documents.
 The recommended **Authorize for this task** option records explicit consent,
 issues a distinct read-only capability to each final specialist, restricts every
-capability to this task ID, and revokes all of them at a terminal outcome. The
-Lead receives only metadata and coordination context, never the raw document.
+capability to this task ID, and revokes all of them when the Team ends. If **The
+Lead picks them**, the Lead first chooses a roster using only the objective and
+Agent descriptions; capabilities are issued only after that roster is validated.
+The Lead receives metadata and coordination context, never the raw document.
 
-For a deliberate failure-and-recovery exercise, choose **Require manual
-approval**. The first specialist without a valid manual lease is denied before a
-Runtime starts, the task pauses, and it can be resumed after approval.
+For higher-control data, choose **Ask me when needed**. The first specialist
+without permission is denied before its Runtime starts and a middleware-generated
+approval card appears in the Team conversation. The user may allow one turn,
+allow that Agent for the Team, allow the current roster, or deny and stop the
+request. Approval resumes the blocked specialist automatically; the model cannot
+create or resolve the request itself.
 
 The selected specialists
 form an authorized pool rather than a fixed sequence. After each contribution, the Lead
@@ -358,7 +366,7 @@ to visible and testable evidence rather than slide-only claims:
 | --- | --- |
 | Technical execution | Server-resolved sessions, per-Agent principals, task-bound capabilities, pre-Runtime policy checks, read-only container mounts, persistent coordination state, structured Lead decisions, retries, and two verified receipt chains |
 | Innovation and problem insight | Treats delegation authority and data authority as independent; human ownership does not silently become standing Agent privilege |
-| Feasibility and practicality | One-click task consent solves lease fatigue; manual approval remains for high-risk workflows; Docker SOP, health checks, migrations, CSV evidence, and automated tests make the demo reproducible |
+| Feasibility and practicality | One-click task consent solves lease fatigue; inline step-up approval preserves human control for high-risk workflows; Docker SOP, health checks, migrations, CSV evidence, and automated tests make the demo reproducible |
 | Impact and relevance | Enables useful multi-Agent work over private context while preserving tenant isolation, least privilege, attribution, revocation, and failure recovery |
 
 See the [official rules](https://tiktoktechjam2026.devpost.com/rules) for the

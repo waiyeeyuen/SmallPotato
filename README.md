@@ -148,9 +148,10 @@ receives the updated actor-labelled transcript and dynamically selects the speci
 best suited to build on, refine, verify, or challenge the conversation. Specialists also
 share one task workspace, with sequential turns so file writes remain deterministic.
 Contributions, handoffs, active assignment, elapsed time, retries, shared-state patches,
-and final Lead synthesis remain visible and persisted.
-Active tasks can be stopped. Tasks paused by a restart or Lead failure can be resumed,
-and a completed task can be followed immediately by a fresh task without a refresh.
+and final Lead synthesis remain visible in one persistent chat transcript. After an
+answer, the same reserved team, Codex threads, roster, and shared workspace stay ready
+for the next message. Each message may select a different protected document. A running
+request can be cancelled without ending the team; **End team** releases its Agents.
 
 For a quick demo, pick **Trip Coordinator** as Lead with the three travel
 specialists, and ask it to plan a short trip within a budget.

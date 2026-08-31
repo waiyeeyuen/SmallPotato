@@ -1,7 +1,7 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
-export type TeamTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
+export type TeamTaskStatus = "ready" | "running" | "paused" | "completed" | "failed" | "stopped";
 /**
  * How the platform decides which agent takes the next turn.
  * - "facilitated": the Lead agent names the next specialist each turn (open-ended
@@ -20,6 +20,7 @@ export type TeamTaskTurnPolicy = "facilitated" | "sequential";
 export type TeamAgentSelection = "user" | "lead";
 export type TeamTaskEventType =
   | "task_started"
+  | "user_message"
   | "turn_started"
   | "coordination_plan"
   | "lead_decision"
@@ -31,6 +32,9 @@ export type TeamTaskEventType =
   | "task_paused"
   | "task_resumed"
   | "task_completed"
+  | "request_completed"
+  | "request_cancelled"
+  | "request_failed"
   | "task_stopped"
   | "system";
 
@@ -107,9 +111,13 @@ export interface TeamTask {
    */
   specialistAgentIds: string[];
   agentSelection: TeamAgentSelection;
+  /** True once the persistent conversation's specialist roster is fixed. */
+  rosterLocked: boolean;
   /** null until the Lead commits a coordination mode on its first turn. */
   turnPolicy: TeamTaskTurnPolicy | null;
   status: TeamTaskStatus;
+  /** Sequence of the user_message event that started the current request. */
+  activeRequestSequence: number | null;
   workspacePath: string;
   currentAgentId: string | null;
   currentAssignment: string | null;
@@ -228,7 +236,7 @@ export interface RequestActor {
 }
 
 export interface Database {
-  version: 5;
+  version: 6;
   users: User[];
   sessions: Session[];
   agents: Agent[];

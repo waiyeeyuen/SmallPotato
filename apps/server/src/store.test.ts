@@ -22,7 +22,12 @@ describe("JsonStore", () => {
     const timestamp = new Date().toISOString();
     await writeFile(filePath, JSON.stringify({
       version: 4,
-      agents: [], messages: [], runs: [], teamTaskEvents: [],
+      agents: [], messages: [], runs: [], teamTaskEvents: [{
+        id: "event-1", taskId: "task-1", sequence: 1, type: "task_started",
+        agentId: null, content: "Started", chatContent: null, assignment: null,
+        attempt: null, statePatch: null, previousReceiptHash: null,
+        receiptHash: "legacy-receipt", createdAt: timestamp,
+      }],
       teamTasks: [{
         id: "task-1", objective: "Existing council", mode: "council",
         leadAgentId: "lead", specialistAgentIds: ["specialist"], status: "completed",
@@ -36,14 +41,17 @@ describe("JsonStore", () => {
 
     const store = new JsonStore(filePath);
     await store.initialize();
-    expect(store.snapshot().version).toBe(5);
+    expect(store.snapshot().version).toBe(6);
     expect((store.snapshot().teamTasks[0] as unknown as { mode: string }).mode).toBe("council");
     expect(store.snapshot().teamTasks[0]?.assignmentQueue).toEqual([]);
     expect(store.snapshot().teamTasks[0]?.activeTurnStartedAt).toBeNull();
     expect(store.snapshot().teamTasks[0]?.turnPolicy).toBeNull();
     expect(store.snapshot().teamTasks[0]?.agentSelection).toBe("user");
+    expect(store.snapshot().teamTasks[0]?.rosterLocked).toBe(true);
+    expect(store.snapshot().teamTasks[0]?.activeRequestSequence).toBeNull();
+    expect(store.snapshot().teamTaskEvents[0]?.receiptHash).toBe("legacy-receipt");
     expect(JSON.parse(await readFile(filePath + ".v4.backup", "utf8")).version).toBe(4);
-    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(5);
+    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(6);
   });
 
   it("migrates version 1 data without losing Agents, messages, or runs", async () => {
@@ -68,13 +76,13 @@ describe("JsonStore", () => {
     const store = new JsonStore(filePath);
     await store.initialize();
     const database = store.snapshot();
-    expect(database.version).toBe(5);
+    expect(database.version).toBe(6);
     expect(database.agents[0]?.activeTeamTaskId).toBeNull();
     expect(database.messages).toHaveLength(1);
     expect(database.runs).toHaveLength(1);
     expect(database.teamTasks).toEqual([]);
     expect(database.teamTaskEvents).toEqual([]);
-    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(5);
+    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(6);
   });
 
   it("backs up AgentGuard version 3 data and preserves shared Agent history", async () => {
@@ -98,7 +106,7 @@ describe("JsonStore", () => {
     const store = new JsonStore(filePath);
     await store.initialize();
     const database = store.snapshot();
-    expect(database.version).toBe(5);
+    expect(database.version).toBe(6);
     expect(database.agents[0]?.activeTeamTaskId).toBeNull();
     expect(database.messages).toHaveLength(1);
     expect(database.runs).toHaveLength(1);

@@ -97,6 +97,13 @@ export const api = {
     request<{ task: TeamTask; events: TeamTaskEvent[]; eventsVerified: boolean }>(
       "/api/team-tasks/" + id,
     ),
+  sendTeamMessage: (id: string, content: string, resourceId?: string) =>
+    request<{ task: TeamTask }>("/api/team-tasks/" + id + "/messages", {
+      method: "POST",
+      body: JSON.stringify({ content, ...(resourceId ? { resourceId } : {}) }),
+    }),
+  cancelTeamRequest: (id: string) =>
+    request<{ task: TeamTask }>("/api/team-tasks/" + id + "/cancel", { method: "POST" }),
   stopTeamTask: (id: string) =>
     request<{ task: TeamTask }>("/api/team-tasks/" + id + "/stop", { method: "POST" }),
   resumeTeamTask: (id: string) =>

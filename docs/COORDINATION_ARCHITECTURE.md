@@ -2,11 +2,12 @@
 
 ## Objective
 
-Team Tasks are real middleware, not a scripted UI. A user supplies one objective and
-selects a Lead plus one or more specialists. The server owns the workflow state,
+Team Tasks are real middleware, not a scripted UI. A user creates a persistent team
+conversation with a Lead plus one or more specialists, then sends it successive requests.
+The server owns the workflow state,
 reserves the participating Agents, invokes each Codex Runtime turn, validates its
-structured result, persists every transition, and releases the Agents only after a
-terminal outcome.
+structured result, and persists every transition. The roster remains reserved between
+answers and is released only when the user ends the team.
 
 ```mermaid
 flowchart LR
@@ -37,7 +38,7 @@ sequenceDiagram
 
   User->>UI: Submit objective and team
   UI->>C: Create Team Task
-  C->>C: Reserve Agents and persist task_started
+  C->>C: Reserve Agents and persist task_started + user_message
   C->>L: Ask for the most useful first conversational turn
   L-->>C: Select one relevant specialist and assignment
   C->>C: Validate the Agent against the authorized pool
@@ -49,8 +50,10 @@ sequenceDiagram
   B-->>C: Return contribution and activity evidence
   C->>L: Review all results and synthesize
   L-->>C: Return complete with final summary
-  C->>C: Persist completion and release Agents
-  C-->>UI: Terminal task state unlocks a new task
+  C->>C: Persist request_completed and keep Agents reserved
+  C-->>UI: Ready state enables the chat composer
+  User->>UI: Send the next request
+  UI->>C: Append a message to the same Team Task
 ```
 
 The Lead is intentionally consulted after every specialist turn. This prevents later
@@ -76,11 +79,12 @@ the genuine collaboration remains understandable while it runs.
 - Twelve successful specialist rounds force final synthesis; a 30-turn global limit
   is the second runaway-coordination safeguard.
 - Restarted in-flight tasks become paused and can be resumed explicitly.
-- Terminal tasks clear Agent reservations and do not block the next task.
+- Completed requests return the persistent team to ready without clearing its roster,
+  threads, workspace, or transcript. Ending the team clears Agent reservations.
 
 ## Deliberate scope
 
-The final hackathon build permits one active or paused Team Task at a time. This keeps
+The final hackathon build permits one ready, active, or paused Team conversation at a time. This keeps
 the demo deterministic and makes resource ownership obvious. The next production
 step would be a durable queue with per-workspace locks, tenant identity, and a database
 transaction layer for concurrent teams.

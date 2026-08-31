@@ -27,6 +27,10 @@ const messageBody = z.object({
   resourceId: z.string().trim().min(1).max(120).optional(),
 }).strict();
 const teamTaskIdParams = z.object({ id: z.string().uuid() });
+const teamMessageBody = z.object({
+  content: z.string().trim().min(1).max(20_000),
+  resourceId: z.string().trim().min(1).max(120).optional(),
+}).strict();
 const createTeamTaskBody = z.object({
   objective: z.string().trim().min(1).max(20_000),
   leadAgentId: z.string().uuid(),
@@ -257,7 +261,9 @@ export async function createApp(
   });
 
   if (teamTasks) {
-    app.get("/api/team-tasks", async () => ({ tasks: teamTasks.listTasks() }));
+    app.get("/api/team-tasks", async (request) => ({
+      tasks: teamTasks.listTasks(await actorFor(request)),
+    }));
 
     app.post("/api/team-tasks", async (request, reply) => {
       const body = createTeamTaskBody.parse(request.body);
@@ -267,21 +273,39 @@ export async function createApp(
 
     app.get("/api/team-tasks/:id", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
+      const actor = await actorFor(request);
       return {
-        task: teamTasks.getTask(id),
-        events: teamTasks.getEvents(id),
-        eventsVerified: teamTasks.verifyEventChain(id),
+        task: teamTasks.getTask(id, actor),
+        events: teamTasks.getEvents(id, actor),
+        eventsVerified: teamTasks.verifyEventChain(id, actor),
       };
+    });
+
+    app.post("/api/team-tasks/:id/messages", async (request, reply) => {
+      const { id } = teamTaskIdParams.parse(request.params);
+      const body = teamMessageBody.parse(request.body);
+      const task = await teamTasks.sendMessage(
+        await actorFor(request),
+        id,
+        body.content,
+        body.resourceId,
+      );
+      return reply.code(202).send({ task });
+    });
+
+    app.post("/api/team-tasks/:id/cancel", async (request) => {
+      const { id } = teamTaskIdParams.parse(request.params);
+      return { task: await teamTasks.cancelRequest(await actorFor(request), id) };
     });
 
     app.post("/api/team-tasks/:id/stop", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
-      return { task: await teamTasks.stopTask(id) };
+      return { task: await teamTasks.stopTask(id, await actorFor(request)) };
     });
 
     app.post("/api/team-tasks/:id/resume", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
-      return { task: await teamTasks.resumeTask(id) };
+      return { task: await teamTasks.resumeTask(id, await actorFor(request)) };
     });
   }
 

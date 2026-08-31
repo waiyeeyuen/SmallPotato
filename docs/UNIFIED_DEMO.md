@@ -18,7 +18,7 @@ Both chains use the same primitive: `chainHash` in
 
 ## How the enforcement works
 
-A Team Task can name one protected resource. Every **specialist** turn is then
+A Team request can name one protected resource from its chat composer. Every **specialist** turn is then
 authorized independently through `SecurityService.authorizeResourceRead` before
 the Runtime is touched:
 

@@ -56,10 +56,36 @@ export interface ResourceSummary {
   ownerUserId: string;
   ownerName: string;
   ownedByCurrentUser: boolean;
+  sharedWithCurrentUser: boolean;
+  shareState: "active" | "revoked" | "expired" | null;
+  shareExpiresAt: string | null;
   sizeBytes: number;
   isDemo: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ShareableUser {
+  userId: string;
+  username: string;
+  displayName: string;
+}
+
+export interface ResourceShare {
+  id: string;
+  resourceId: string;
+  resourceName: string;
+  ownerUserId: string;
+  ownerName: string;
+  granteeUserId: string;
+  granteeName: string;
+  actions: "read"[];
+  purpose: string;
+  createdByUserId: string;
+  createdAt: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  state: "active" | "revoked" | "expired";
 }
 
 export interface PermissionGrant {
@@ -80,12 +106,13 @@ export interface PolicyDecision {
   id: string;
   humanUserId: string;
   humanName: string;
-  agentId: string;
-  agentName: string;
-  agentPrincipalId: string;
-  action: "read";
+  agentId: string | null;
+  agentName: string | null;
+  agentPrincipalId: string | null;
+  action: "read" | "share" | "unshare";
   resourceId: string;
   resourceName: string;
+  resourceOwnerUserId: string;
   outcome: "allow" | "deny";
   reason: string;
   grantId: string | null;

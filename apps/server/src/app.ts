@@ -47,6 +47,15 @@ const grantBody = z.object({
   ttlSeconds: z.number().int().min(30).max(3600),
 }).strict();
 const resourceParams = z.object({ id: z.string().trim().min(1).max(120) });
+const shareParams = z.object({
+  id: z.string().trim().min(1).max(120),
+  shareId: z.string().uuid(),
+});
+const createShareBody = z.object({
+  granteeUserId: z.string().trim().min(1).max(120),
+  purpose: z.string().trim().min(3).max(240),
+  expiresAt: z.string().datetime().optional(),
+}).strict();
 const createResourceBody = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().max(500).default(""),
@@ -257,7 +266,9 @@ export async function createApp(
   });
 
   if (teamTasks) {
-    app.get("/api/team-tasks", async () => ({ tasks: teamTasks.listTasks() }));
+    app.get("/api/team-tasks", async (request) => ({
+      tasks: teamTasks.listTasks(await actorFor(request)),
+    }));
 
     app.post("/api/team-tasks", async (request, reply) => {
       const body = createTeamTaskBody.parse(request.body);
@@ -267,6 +278,7 @@ export async function createApp(
 
     app.get("/api/team-tasks/:id", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
+      teamTasks.assertTaskOwner(await actorFor(request), id);
       return {
         task: teamTasks.getTask(id),
         events: teamTasks.getEvents(id),
@@ -276,11 +288,13 @@ export async function createApp(
 
     app.post("/api/team-tasks/:id/stop", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
+      teamTasks.assertTaskOwner(await actorFor(request), id);
       return { task: await teamTasks.stopTask(id) };
     });
 
     app.post("/api/team-tasks/:id/resume", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
+      teamTasks.assertTaskOwner(await actorFor(request), id);
       return { task: await teamTasks.resumeTask(id) };
     });
   }
@@ -304,6 +318,72 @@ export async function createApp(
   app.delete("/api/resources/:id", async (request) => {
     const { id } = resourceParams.parse(request.params);
     return security.deleteResource(await actorFor(request), id);
+  });
+
+  app.get("/api/users/shareable", async (request) => ({
+    users: security.listShareableUsers(await actorFor(request)),
+  }));
+
+  app.get("/api/account/shares", async (request) => ({
+    shares: security.listSharesForOwner(await actorFor(request)),
+  }));
+
+  app.get("/api/resources/:id/shares", async (request) => {
+    const { id } = resourceParams.parse(request.params);
+    return { shares: security.listSharesForResource(await actorFor(request), id) };
+  });
+
+  app.post("/api/resources/:id/shares", async (request, reply) => {
+    const { id } = resourceParams.parse(request.params);
+    const body = createShareBody.parse(request.body);
+    const share = await security.createShare(
+      await actorFor(request),
+      id,
+      body.granteeUserId,
+      body.purpose,
+      body.expiresAt ?? null,
+    );
+    return reply.code(201).send({ share });
+  });
+
+  app.delete("/api/resources/:id/shares/:shareId", async (request) => {
+    const { id, shareId } = shareParams.parse(request.params);
+    return { share: await security.revokeShare(await actorFor(request), id, shareId) };
+  });
+
+  app.get("/api/account/receipts", async (request) => {
+    const actor = await actorFor(request);
+    return {
+      decisions: security.listAccountReceipts(actor),
+      chainValid: security.verifyDecisionChain(),
+    };
+  });
+
+  app.get("/api/account/receipts.csv", async (request, reply) => {
+    const actor = await actorFor(request);
+    const decisions = security.listAccountReceipts(actor);
+    const escape = (value: unknown) => '"' + String(value ?? "").replaceAll('"', '""') + '"';
+    const rows = [
+      ["decision_id", "human", "agent", "agent_principal", "action", "resource", "resource_owner", "outcome", "reason", "grant_id", "run_id", "receipt_hash", "created_at"],
+      ...decisions.map((decision) => [
+        decision.id,
+        decision.humanName,
+        decision.agentName,
+        decision.agentPrincipalId,
+        decision.action,
+        decision.resourceName,
+        decision.resourceOwnerUserId,
+        decision.outcome,
+        decision.reason,
+        decision.grantId,
+        decision.runId,
+        decision.receiptHash,
+        decision.createdAt,
+      ]),
+    ];
+    reply.header("Content-Type", "text/csv; charset=utf-8");
+    reply.header("Content-Disposition", 'attachment; filename="sharing-receipts.csv"');
+    return rows.map((row) => row.map(escape).join(",")).join("\n") + "\n";
   });
 
   app.get("/api/agents/:id/permissions", async (request) => {

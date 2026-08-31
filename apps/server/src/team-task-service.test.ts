@@ -270,7 +270,42 @@ describe("TeamTaskService", () => {
     });
     await expect.poll(() => teamTasks.getTask(second.id).status).toBe("completed");
     expect(second.id).not.toBe(first.id);
-    expect(teamTasks.listTasks()).toHaveLength(2);
+    expect(teamTasks.listTasks(actor)).toHaveLength(2);
+  });
+
+  it("keeps each user's Agents and Team Tasks private to their own account", async () => {
+    const bob = { userId: "user-bob", username: "bob", displayName: "Bob Lim" };
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Alice Lead" });
+    const specialistAgent = await agents.createAgent(actor, { name: "Alice Specialist" });
+    runner.script.push(
+      planFacilitated(specialistAgent.id, "Do the work"),
+      specialist("Done"),
+      complete("Complete"),
+    );
+    const task = await teamTasks.createTask(actor, {
+      objective: "Alice's private objective",
+      leadAgentId: lead.id,
+      specialistAgentIds: [specialistAgent.id],
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+
+    // Bob cannot see or touch Alice's task or its transcript. The stop/resume
+    // routes gate on this same check before mutating.
+    expect(teamTasks.listTasks(bob)).toHaveLength(0);
+    expect(teamTasks.listTasks(actor).map((item) => item.id)).toContain(task.id);
+    expect(() => teamTasks.assertTaskOwner(bob, task.id)).toThrow(/not found/);
+    expect(teamTasks.assertTaskOwner(actor, task.id).id).toBe(task.id);
+
+    // Bob cannot build a task out of Alice's Agents.
+    await expect(
+      teamTasks.createTask(bob, {
+        objective: "Borrow Alice's Agents",
+        leadAgentId: lead.id,
+        specialistAgentIds: [specialistAgent.id],
+      }),
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("retries a specialist twice and returns the failure to the Lead", async () => {
@@ -594,10 +629,38 @@ describe("TeamTaskService", () => {
       specialistAgentIds: [selected.id],
     });
     await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
-    expect(teamTasks.getTask(task.id).lastError).toContain(
-      "Lead selected an Agent outside the authorized specialist pool",
-    );
+    // The retry between the two failures is steered with the exact pool.
+    expect(teamTasks.getTask(task.id).lastError).toContain("not one of your authorized specialists");
+    expect(teamTasks.getTask(task.id).lastError).toContain("Selected Specialist (id: " + selected.id + ")");
     expect(runner.requests.map((request) => request.agentId)).toEqual([lead.id, lead.id]);
+  });
+
+  it("recovers when the Lead names an authorized specialist with a decorated name", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner);
+    const lead = await agents.createAgent(actor, { name: "Trip Coordinator" });
+    const scout = await agents.createAgent(actor, { name: "Flight & Hotel Scout" });
+    const budget = await agents.createAgent(actor, { name: "Budget Analyst" });
+    runner.script.push(
+      // decorated / punctuation-variant name instead of the UUID
+      planFacilitated("the Flight and Hotel Scout (travel)", "Find a flight and a place to stay"),
+      specialist("Fly Fri, stay in Shibuja, ~$180/night.", "Compared routes and areas."),
+      delegate("Budget Analyst", "Cost the trip for two against the budget"),
+      specialist("Two nights + flights ≈ $980, under budget.", "Totalled the line items."),
+      complete("Itinerary and budget are ready."),
+    );
+
+    const task = await teamTasks.createTask(actor, {
+      objective: "Plan a short weekend trip within budget",
+      leadAgentId: lead.id,
+      specialistAgentIds: [scout.id, budget.id],
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    // No pause, no wasted retry — the decorated name resolved on the first try.
+    expect(runner.requests.map((request) => request.agentId)).toEqual([
+      lead.id, scout.id, lead.id, budget.id, lead.id,
+    ]);
+    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
   });
 
   it("stops unnecessary collaboration after twelve specialist rounds", async () => {
@@ -857,7 +920,7 @@ describe("TeamTaskService", () => {
     expect(agents.getAgent(actor, b.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
   });
 
-  it("pauses the whole workflow when a specialist turn is denied the task's protected resource", async () => {
+  it("refuses to start — no Lead turn, no hand-off — when a specialist cannot read the protected resource", async () => {
     const runner = new ScriptedRunner();
     const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
     const lead = await agents.createAgent(actor, { name: "Lead" });
@@ -867,25 +930,28 @@ describe("TeamTaskService", () => {
       description: "Protected launch checklist",
       content: "Priority one: ship the Runtime boundary.",
     });
-    runner.script.push(planFacilitated(analyst.id, "Read the protected brief and summarize its priorities"));
 
-    const task = await teamTasks.createTask(actor, {
-      objective: "Summarize the protected brief",
-      leadAgentId: lead.id,
-      specialistAgentIds: [analyst.id],
-      resourceId: resource.id,
+    await expect(
+      teamTasks.createTask(actor, {
+        objective: "Summarize the protected brief",
+        leadAgentId: lead.id,
+        specialistAgentIds: [analyst.id],
+        resourceId: resource.id,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      details: { code: "RESOURCE_ACCESS_DENIED", reason: "GRANT_MISSING", agentName: "Analyst" },
     });
-    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("paused");
 
-    expect(teamTasks.getTask(task.id).lastError).toContain("GRANT_MISSING");
-    // The Lead coordinated, but the denied specialist turn never reached the Runtime.
-    expect(runner.requests.map((request) => request.agentId)).toEqual([lead.id]);
-    const denial = teamTasks.getEvents(task.id).find((event) => event.type === "resource_authorization");
-    expect(denial?.content).toContain("DENY");
-    expect(denial?.agentId).toBe(analyst.id);
-    // Delegation authority and data authority land in the same tamper-evident log.
-    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+    // Nothing was provisioned: no task, no Runtime call, Agents still idle. A
+    // hash-chained deny receipt was still written for the attempt.
+    expect(teamTasks.listTasks(actor)).toHaveLength(0);
+    expect(runner.requests).toHaveLength(0);
     expect(agents.getAgent(actor, analyst.id)).toMatchObject({ status: "ready", activeTeamTaskId: null });
+    expect(security.listDecisions(actor, agents.getAgent(actor, analyst.id))[0]).toMatchObject({
+      outcome: "deny",
+      reason: "GRANT_MISSING",
+    });
   });
 
   it("mounts the protected resource read-only for an authorized specialist turn only", async () => {
@@ -923,5 +989,132 @@ describe("TeamTaskService", () => {
     const allow = teamTasks.getEvents(task.id).find((event) => event.type === "resource_authorization");
     expect(allow?.content).toContain("ALLOW");
     expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+  });
+
+  it("authorizes a specialist turn against another user's resource via a cross-user share", async () => {
+    const bobActor = { userId: "user-bob", username: "bob", displayName: "Bob Lim" };
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+    // Bob owns the file; Alice's Agents hold no lease on it.
+    const resource = await security.createResource(bobActor, {
+      name: "Partner Shortlist",
+      description: "Bob's protected shortlist",
+      content: "Option A, Option B, Option C.",
+    });
+
+    // Not shared yet ⇒ the task is refused before it starts, no hand-off.
+    await expect(
+      teamTasks.createTask(actor, {
+        objective: "Summarize Bob's shortlist",
+        leadAgentId: lead.id,
+        specialistAgentIds: [analyst.id],
+        resourceId: resource.id,
+      }),
+    ).rejects.toMatchObject({ statusCode: 403, details: { reason: "SHARE_MISSING" } });
+    expect(teamTasks.listTasks(actor)).toHaveLength(0);
+    expect(runner.requests).toHaveLength(0);
+
+    // Bob shares it with Alice — no per-Agent lease needed after that.
+    await security.createShare(bobActor, resource.id, actor.userId, "Team review", null);
+    runner.script.push(
+      planFacilitated(analyst.id, "Read the shared shortlist and summarize the options"),
+      specialist("Three partner options are on the table.", "Read and summarized the shortlist."),
+      complete("The shortlist has three partner options."),
+    );
+
+    const task = await teamTasks.createTask(actor, {
+      objective: "Summarize Bob's shortlist",
+      leadAgentId: lead.id,
+      specialistAgentIds: [analyst.id],
+      resourceId: resource.id,
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
+    const specialistRequest = runner.requests.find((request) => request.agentId === analyst.id);
+    expect(specialistRequest?.mounts).toEqual([
+      { sourcePath: expect.any(String), targetPath: "/authorized-resources/" + resource.id + ".txt", readOnly: true },
+    ]);
+    expect(teamTasks.verifyEventChain(task.id)).toBe(true);
+  });
+
+  it("stops before any hand-off when the objective names a protected resource the user cannot access", async () => {
+    const bobActor = { userId: "user-bob", username: "bob", displayName: "Bob Lim" };
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks, security } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+    await security.createResource(bobActor, {
+      name: "Quarterly Revenue Memo",
+      description: "Bob's numbers",
+      content: "Fictional revenue figures.",
+    });
+
+    // No resourceId attached, but the objective clearly names Bob's memo.
+    await expect(
+      teamTasks.createTask(actor, {
+        objective: "Summarise the Quarterly Revenue Memo for the leadership review",
+        leadAgentId: lead.id,
+        specialistAgentIds: [analyst.id],
+      }),
+    ).rejects.toMatchObject({ statusCode: 403, details: { code: "RESOURCE_ACCESS_DENIED", reason: "SHARE_MISSING" } });
+    expect(teamTasks.listTasks(actor)).toHaveLength(0);
+    expect(runner.requests).toHaveLength(0);
+  });
+
+  it("stops when the objective mentions a protected document but none is attached", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+
+    await expect(
+      teamTasks.createTask(actor, {
+        objective: "Tell me what is in Bob's document and summarise it",
+        leadAgentId: lead.id,
+        specialistAgentIds: [analyst.id],
+      }),
+    ).rejects.toMatchObject({ statusCode: 422, details: { code: "RESOURCE_NOT_ATTACHED" } });
+    expect(runner.requests).toHaveLength(0);
+  });
+
+  it("stops at the start when the objective names an accessible resource (plural-tolerant) that wasn't attached", async () => {
+    const runner = new ScriptedRunner();
+    const { agents, teamTasks } = await makeServices(runner, { RUNTIME_PROVIDER: "container" });
+    const lead = await agents.createAgent(actor, { name: "Lead" });
+    const analyst = await agents.createAgent(actor, { name: "Analyst" });
+    // The seeded "Partnerships Brief" is owned by Bob and shared with Alice.
+    // The prompt says "partnership brief" (singular) and attaches nothing.
+    await expect(
+      teamTasks.createTask(actor, {
+        objective: "what's in the partnership brief",
+        leadAgentId: lead.id,
+        specialistAgentIds: [analyst.id],
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      details: {
+        code: "RESOURCE_NOT_ATTACHED",
+        resourceId: "resource-bob-partnerships-brief",
+        resourceName: "Partnerships Brief",
+      },
+    });
+    expect(teamTasks.listTasks(actor)).toHaveLength(0);
+    expect(runner.requests).toHaveLength(0);
+
+    // Attaching it lets the task run — the active share covers every specialist,
+    // no per-Agent lease needed.
+    runner.script.push(
+      planFacilitated(analyst.id, "Read the partnerships brief and list the options"),
+      specialist("Three options are on the table.", "Read the brief."),
+      complete("The brief lists three partner options."),
+    );
+    const task = await teamTasks.createTask(actor, {
+      objective: "what's in the partnership brief",
+      leadAgentId: lead.id,
+      specialistAgentIds: [analyst.id],
+      resourceId: "resource-bob-partnerships-brief",
+    });
+    await expect.poll(() => teamTasks.getTask(task.id).status).toBe("completed");
   });
 });

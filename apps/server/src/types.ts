@@ -193,6 +193,30 @@ export interface PermissionGrant {
   revokedAt: string | null;
 }
 
+/**
+ * Cross-user share: the resource OWNER grants another user read access to one
+ * protected resource. Distinct from a PermissionGrant (which binds an Agent
+ * principal to a resource the actor owns). Once an active share exists, every
+ * Agent belonging to the grantee may read the file — no per-Agent lease needed.
+ */
+export interface ResourceShare {
+  id: string;
+  resourceId: string;
+  /** Denormalized owner at creation time = resource.ownerUserId. */
+  ownerUserId: string;
+  granteeUserId: string;
+  actions: ResourceAction[];
+  purpose: string;
+  /** Always equal to ownerUserId — only the owner can create a share. */
+  createdByUserId: string;
+  createdAt: string;
+  /** null = no expiry; the owner may still revoke at any time. */
+  expiresAt: string | null;
+  revokedAt: string | null;
+}
+
+export type PolicyAction = "read" | "share" | "unshare";
+
 export type PolicyReason =
   | "GRANT_ACTIVE"
   | "GRANT_MISSING"
@@ -200,18 +224,27 @@ export type PolicyReason =
   | "GRANT_EXPIRED"
   | "AGENT_NOT_OWNED"
   | "RESOURCE_NOT_OWNED"
-  | "RESOURCE_NOT_FOUND";
+  | "RESOURCE_NOT_FOUND"
+  | "SHARE_ACTIVE"
+  | "SHARE_MISSING"
+  | "SHARE_REVOKED"
+  | "SHARE_EXPIRED"
+  | "SHARE_CREATED"
+  | "SHARE_REVOKED_BY_OWNER";
 
 export interface PolicyDecision {
   id: string;
   humanUserId: string;
   humanName: string;
-  agentId: string;
-  agentName: string;
-  agentPrincipalId: string;
-  action: ResourceAction;
+  /** null for share-management receipts, which are not tied to an Agent. */
+  agentId: string | null;
+  agentName: string | null;
+  agentPrincipalId: string | null;
+  action: PolicyAction;
   resourceId: string;
   resourceName: string;
+  /** Denormalized so a resource owner can filter receipts about their own files. */
+  resourceOwnerUserId: string;
   outcome: "allow" | "deny";
   reason: PolicyReason;
   grantId: string | null;
@@ -228,7 +261,7 @@ export interface RequestActor {
 }
 
 export interface Database {
-  version: 5;
+  version: 6;
   users: User[];
   sessions: Session[];
   agents: Agent[];
@@ -236,6 +269,7 @@ export interface Database {
   runs: AgentRun[];
   resources: ProtectedResource[];
   grants: PermissionGrant[];
+  shares: ResourceShare[];
   decisions: PolicyDecision[];
   teamTasks: TeamTask[];
   teamTaskEvents: TeamTaskEvent[];

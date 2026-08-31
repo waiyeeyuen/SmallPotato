@@ -12,6 +12,11 @@ const alice: RequestActor = {
   username: "alice",
   displayName: "Alice Tan",
 };
+const bob: RequestActor = {
+  userId: "user-bob",
+  username: "bob",
+  displayName: "Bob Lim",
+};
 
 afterEach(async () => {
   await Promise.all(
@@ -94,20 +99,133 @@ describe("SecurityService", () => {
     expect(revoked.decision).toMatchObject({ outcome: "deny", reason: "GRANT_REVOKED" });
   });
 
-  it("does not permit Alice to grant or read Bob's resource", async () => {
+  it("denies Alice's Agent a read of Bob's resource that has not been shared", async () => {
     const { security } = await makeSecurity();
     const guardedAgent = agent();
-    const bobResource = security.listResources(alice).find((item) => !item.ownedByCurrentUser);
-    if (!bobResource) throw new Error("Expected Bob fixture resource");
+    const bobResource = security
+      .listResources(alice)
+      .find((item) => !item.ownedByCurrentUser && item.id === "resource-bob-finance-report");
+    if (!bobResource) throw new Error("Expected Bob finance fixture resource");
+    // Alice still cannot mint a per-Agent lease on a resource she does not own.
     await expect(
       security.createGrant(alice, guardedAgent, bobResource.id, "Bypass", 60),
     ).rejects.toMatchObject({ statusCode: 403 });
     const denied = await security.authorizeResourceRead(alice, guardedAgent, bobResource.id);
-    expect(denied.decision).toMatchObject({
-      outcome: "deny",
-      reason: "RESOURCE_NOT_OWNED",
-    });
+    expect(denied.decision).toMatchObject({ outcome: "deny", reason: "SHARE_MISSING" });
     expect(denied.resource).toBeNull();
+  });
+
+  it("lets Bob share a resource so Alice's Agent can read it, with a receipt", async () => {
+    const { security } = await makeSecurity();
+    const guardedAgent = agent();
+    const bobResource = security
+      .listResources(bob)
+      .find((item) => item.ownedByCurrentUser && item.id === "resource-bob-finance-report");
+    if (!bobResource) throw new Error("Expected Bob finance fixture resource");
+
+    const before = await security.authorizeResourceRead(alice, guardedAgent, bobResource.id);
+    expect(before.decision).toMatchObject({ outcome: "deny", reason: "SHARE_MISSING" });
+
+    const share = await security.createShare(
+      bob,
+      bobResource.id,
+      alice.userId,
+      "Cross-team review",
+      null,
+    );
+    expect(share).toMatchObject({ state: "active", granteeName: "Alice Tan" });
+
+    const allowed = await security.authorizeResourceRead(alice, guardedAgent, bobResource.id);
+    expect(allowed.decision).toMatchObject({
+      outcome: "allow",
+      reason: "SHARE_ACTIVE",
+      grantId: share.id,
+      resourceOwnerUserId: bob.userId,
+    });
+    expect(allowed.resource?.filePath).toContain("bob-finance-report.txt");
+
+    await security.revokeShare(bob, bobResource.id, share.id);
+    const revoked = await security.authorizeResourceRead(alice, guardedAgent, bobResource.id);
+    expect(revoked.decision).toMatchObject({ outcome: "deny", reason: "SHARE_REVOKED" });
+    expect(security.verifyDecisionChain()).toBe(true);
+  });
+
+  it("denies a read once the share has expired", async () => {
+    const { security, store } = await makeSecurity();
+    const guardedAgent = agent();
+    const resourceId = "resource-bob-finance-report";
+    await store.mutate((database) => {
+      database.shares.push({
+        id: "share-expired",
+        resourceId,
+        ownerUserId: bob.userId,
+        granteeUserId: alice.userId,
+        actions: ["read"],
+        purpose: "Stale window",
+        createdByUserId: bob.userId,
+        createdAt: new Date(Date.now() - 7_200_000).toISOString(),
+        expiresAt: new Date(Date.now() - 3_600_000).toISOString(),
+        revokedAt: null,
+      });
+    });
+    const denied = await security.authorizeResourceRead(alice, guardedAgent, resourceId);
+    expect(denied.decision).toMatchObject({ outcome: "deny", reason: "SHARE_EXPIRED" });
+  });
+
+  it("only lets the resource owner create or revoke a share", async () => {
+    const { security } = await makeSecurity();
+    const resourceId = "resource-bob-finance-report";
+    await expect(
+      security.createShare(alice, resourceId, bob.userId, "Not my file", null),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    const share = await security.createShare(bob, resourceId, alice.userId, "Owner share", null);
+    await expect(
+      security.revokeShare(alice, resourceId, share.id),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      security.createShare(bob, resourceId, alice.userId, "Duplicate", null),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("revokes dependent shares when the owner deletes the resource", async () => {
+    const { security } = await makeSecurity();
+    const created = await security.createResource(bob, {
+      name: "Ephemeral Brief",
+      description: "",
+      content: "Fictional partner list.",
+    });
+    const share = await security.createShare(bob, created.id, alice.userId, "Review", null);
+    expect(share.state).toBe("active");
+    await security.deleteResource(bob, created.id);
+    expect(security.listSharesForOwner(bob).find((item) => item.id === share.id)?.state).toBe(
+      "revoked",
+    );
+    const denied = await security.authorizeResourceRead(alice, agent(), created.id);
+    expect(denied.decision).toMatchObject({ outcome: "deny", reason: "RESOURCE_NOT_FOUND" });
+  });
+
+  it("scopes the account receipt feed to each party without leaking cross-agent audit rows", async () => {
+    const { security } = await makeSecurity();
+    const aliceAgent = agent();
+    const resourceId = "resource-bob-finance-report";
+    await security.createShare(bob, resourceId, alice.userId, "Cross-team review", null);
+    await security.authorizeResourceRead(alice, aliceAgent, resourceId);
+
+    const bobFeed = security.listAccountReceipts(bob);
+    expect(bobFeed.some((item) => item.action === "share")).toBe(true);
+    expect(
+      bobFeed.some(
+        (item) => item.action === "read" && item.humanUserId === alice.userId && item.outcome === "allow",
+      ),
+    ).toBe(true);
+
+    const aliceFeed = security.listAccountReceipts(alice);
+    expect(aliceFeed.some((item) => item.action === "read" && item.resourceOwnerUserId === bob.userId)).toBe(true);
+
+    // Per-Agent audit stays scoped to that Agent's own reads — no share rows.
+    const agentAudit = security.listDecisions(alice, aliceAgent);
+    expect(agentAudit.every((item) => item.agentId === aliceAgent.id)).toBe(true);
+    expect(agentAudit.some((item) => item.action !== "read")).toBe(false);
   });
 
   it("creates, updates, and deletes an owned resource while revoking its leases", async () => {

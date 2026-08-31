@@ -4,7 +4,9 @@ import type {
   Message,
   PermissionGrant,
   PolicyDecision,
+  ResourceShare,
   ResourceSummary,
+  ShareableUser,
   SystemInfo,
   TeamTask,
   TeamTaskEvent,
@@ -133,6 +135,34 @@ export const api = {
       "/api/agents/" + agentId + "/permissions/" + grantId,
       { method: "DELETE" },
     ),
+  shareableUsers: () =>
+    request<{ users: ShareableUser[] }>("/api/users/shareable"),
+  ownerShares: () =>
+    request<{ shares: ResourceShare[] }>("/api/account/shares"),
+  resourceShares: (resourceId: string) =>
+    request<{ shares: ResourceShare[] }>("/api/resources/" + resourceId + "/shares"),
+  createShare: (
+    resourceId: string,
+    body: { granteeUserId: string; purpose: string; expiresAt?: string },
+  ) =>
+    request<{ share: ResourceShare }>("/api/resources/" + resourceId + "/shares", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeShare: (resourceId: string, shareId: string) =>
+    request<{ share: ResourceShare }>(
+      "/api/resources/" + resourceId + "/shares/" + shareId,
+      { method: "DELETE" },
+    ),
+  accountReceipts: () =>
+    request<{ decisions: PolicyDecision[]; chainValid: boolean }>(
+      "/api/account/receipts",
+    ),
+  accountReceiptExport: async () => {
+    const response = await fetch("/api/account/receipts.csv", { credentials: "include" });
+    if (!response.ok) throw new ApiError("Unable to export receipts", response.status);
+    return response.blob();
+  },
   decisions: (agentId: string) =>
     request<{ decisions: PolicyDecision[]; chainValid: boolean }>(
       "/api/agents/" + agentId + "/policy-decisions",

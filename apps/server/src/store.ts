@@ -5,7 +5,7 @@ import { receiptHash } from "./audit.js";
 import type { Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 5,
+  version: 6,
   users: [],
   sessions: [],
   agents: [],
@@ -13,14 +13,54 @@ const emptyDatabase = (): Database => ({
   runs: [],
   resources: [],
   grants: [],
+  shares: [],
   decisions: [],
   teamTasks: [],
   teamTaskEvents: [],
 });
 
+/**
+ * Re-key an existing authorization receipt list onto the current PolicyDecision
+ * shape (adds resourceOwnerUserId, tolerates null Agent fields) and rebuild the
+ * hash-chain so `verifyReceiptChain` stays green after a schema change.
+ */
+function rebuildDecisions(
+  rawDecisions: unknown,
+  resources: Database["resources"],
+): Database["decisions"] {
+  let previousReceiptHash: string | null = null;
+  return (Array.isArray(rawDecisions) ? rawDecisions : []).map((item) => {
+    const decision = item as Partial<Database["decisions"][number]> & {
+      humanUserId: string;
+      resourceId: string;
+    };
+    const { runId, previousReceiptHash: _prev, receiptHash: _hash, ...rest } =
+      decision as Database["decisions"][number];
+    const payload = {
+      ...rest,
+      resourceOwnerUserId:
+        decision.resourceOwnerUserId ??
+        resources.find((resource) => resource.id === decision.resourceId)?.ownerUserId ??
+        decision.humanUserId,
+    } as Omit<
+      Database["decisions"][number],
+      "runId" | "previousReceiptHash" | "receiptHash"
+    >;
+    const migrated = {
+      ...payload,
+      runId: runId ?? null,
+      previousReceiptHash,
+      receiptHash: receiptHash(payload, previousReceiptHash),
+    } as Database["decisions"][number];
+    previousReceiptHash = migrated.receiptHash;
+    return migrated;
+  });
+}
+
 function normalizeDatabase(database: Database): Database {
   return {
     ...database,
+    shares: database.shares ?? [],
     agents: database.agents.map((agent) => ({
       ...agent,
       activeTeamTaskId: agent.activeTeamTaskId ?? null,
@@ -49,7 +89,18 @@ function migrateDatabase(value: unknown): Database {
     agents?: Array<Record<string, unknown>>;
   };
   if (!Array.isArray(parsed.agents)) throw new Error("Unsupported database format");
-  if (parsed.version === 5) return normalizeDatabase(parsed as Database);
+  if (parsed.version === 6) return normalizeDatabase(parsed as Database);
+  if (parsed.version === 5) {
+    const legacy = parsed as unknown as Database & Record<string, unknown>;
+    const resources = Array.isArray(legacy.resources) ? legacy.resources : [];
+    return normalizeDatabase({
+      ...emptyDatabase(),
+      ...legacy,
+      version: 6,
+      shares: Array.isArray(legacy.shares) ? legacy.shares : [],
+      decisions: rebuildDecisions(legacy.decisions, resources),
+    } as Database);
+  }
   let base: Record<string, unknown>;
   if (parsed.version === 3) {
     const legacy = parsed as Partial<Database>;
@@ -145,6 +196,10 @@ function migrateDatabase(value: unknown): Database {
       resourceId: decision.resourceId,
       resourceName:
         decision.resourceName ?? resources.find((resource) => resource.id === decision.resourceId)?.name ?? "Unknown resource",
+      resourceOwnerUserId:
+        decision.resourceOwnerUserId ??
+        resources.find((resource) => resource.id === decision.resourceId)?.ownerUserId ??
+        decision.humanUserId,
       outcome: decision.outcome ?? "deny",
       reason: decision.reason ?? "RESOURCE_NOT_FOUND",
       grantId: decision.grantId ?? null,
@@ -163,10 +218,11 @@ function migrateDatabase(value: unknown): Database {
   return normalizeDatabase({
     ...emptyDatabase(),
     ...base,
-    version: 5,
+    version: 6,
     users,
     agents,
     resources,
+    shares: Array.isArray(base.shares) ? base.shares : [],
     decisions,
     teamTasks: Array.isArray(base.teamTasks) ? base.teamTasks : [],
     teamTaskEvents: Array.isArray(base.teamTaskEvents) ? base.teamTaskEvents : [],
@@ -194,7 +250,7 @@ export class JsonStore {
         await copyFile(this.filePath, this.filePath + ".v3-agentguard.backup");
       }
       this.data = migrateDatabase(parsed);
-      if (sourceVersion !== 5) await this.persist(this.data);
+      if (sourceVersion !== 6) await this.persist(this.data);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

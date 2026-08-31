@@ -447,14 +447,17 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                       {resources.map((resource) => (
                         <option key={resource.id} value={resource.id}>
                           {resource.name}
+                          {resource.ownedByCurrentUser ? "" : " · shared by " + resource.ownerName}
                         </option>
                       ))}
                     </select>
                   </label>
                   {resourceId && (
                     <p className="team-hint">
-                      Each member is checked against its own capability lease before its turn runs.
-                      Without one the task pauses and nothing is mounted.
+                      Every specialist is authorised <strong>before the task starts</strong> — against
+                      your capability lease for a file you own, or the owner's share for a file shared
+                      with you. If any one is denied, the task is refused with an error and no
+                      hand-off happens.
                     </p>
                   )}
                   {leadPicksAgents ? (

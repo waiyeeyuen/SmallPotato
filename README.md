@@ -34,10 +34,15 @@ The submission includes:
 - Per-user Agent ownership and a separate principal for every Agent
 - Time-limited capability leases scoped to one Agent, action, and resource
 - Protected-resource create, metadata/content replacement, and safe deletion
+- Cross-user resource sharing: the owner grants another user read access to a
+  chosen file (optional expiry, owner-only revoke); the grantee's Agents can then
+  read it, and an un-shared file is denied immediately before the Runtime starts
 - Backend policy enforcement before Agent execution
 - Read-only protected-file mounts in disposable local Runtime containers
 - Immediate revocation, automatic expiry, and deny-by-default behavior
-- Hash-chained allow/deny receipts with human and Agent attribution and CSV export
+- Hash-chained allow/deny receipts with human and Agent attribution and CSV
+  export, plus an account-level "Sharing" view (share/revoke actions and reads
+  on your files by other users' Agents)
 - Browser-supplied human/owner IDs rejected at the HTTP boundary
 - React and TypeScript Web UI
 - Agent create, edit, start, stop, delete, and multi-turn chat
@@ -157,6 +162,31 @@ specialists, and ask it to plan a short trip within a budget.
 
 See the [coordination architecture](docs/COORDINATION_ARCHITECTURE.md) and
 [judge runbook](docs/JUDGE_RUNBOOK.md) for the exact end-to-end flow.
+
+### Cross-user file sharing
+
+Every protected file belongs to one user. Another user's Agents cannot read it
+until the **owner** shares it.
+
+1. Sign in as **Bob**, open **Protected resources**, and press **Share** on
+   *Partnerships Brief*. Pick Alice, enter a purpose, optionally set an expiry,
+   and grant read access. (This share is also seeded on startup so the happy
+   path works immediately.)
+2. Sign in as **Alice**, open an Agent's **Playground**, pick *Partnerships
+   Brief* in the protected-resource selector (`· shared with you`), and send a
+   prompt. The file mounts read-only and the run proceeds.
+3. Still as Alice, pick *Finance Report* instead — Bob never shared it. The run
+   is refused immediately with `SHARE_MISSING`; nothing mounts and the Runtime
+   never starts.
+4. Back as Bob, **Revoke** the share (or let it expire). Alice's next run is
+   denied with `SHARE_REVOKED`.
+
+Every step is a hash-chained receipt. Alice sees her reads in each Agent's
+**Audit receipts** tab; Bob sees the share, the revoke, and every read Alice's
+Agents made on his files in the account-level **Sharing** tab (with CSV export).
+
+Limitations: sharing is read-only, only the owner can share (no re-sharing by
+the grantee), and a share applies to all of the grantee's Agents.
 
 ### 5. Stop and resume
 

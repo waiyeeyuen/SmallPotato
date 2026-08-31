@@ -36,14 +36,14 @@ describe("JsonStore", () => {
 
     const store = new JsonStore(filePath);
     await store.initialize();
-    expect(store.snapshot().version).toBe(5);
+    expect(store.snapshot().version).toBe(6);
     expect((store.snapshot().teamTasks[0] as unknown as { mode: string }).mode).toBe("council");
     expect(store.snapshot().teamTasks[0]?.assignmentQueue).toEqual([]);
     expect(store.snapshot().teamTasks[0]?.activeTurnStartedAt).toBeNull();
     expect(store.snapshot().teamTasks[0]?.turnPolicy).toBeNull();
     expect(store.snapshot().teamTasks[0]?.agentSelection).toBe("user");
     expect(JSON.parse(await readFile(filePath + ".v4.backup", "utf8")).version).toBe(4);
-    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(5);
+    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(6);
   });
 
   it("migrates version 1 data without losing Agents, messages, or runs", async () => {
@@ -68,13 +68,13 @@ describe("JsonStore", () => {
     const store = new JsonStore(filePath);
     await store.initialize();
     const database = store.snapshot();
-    expect(database.version).toBe(5);
+    expect(database.version).toBe(6);
     expect(database.agents[0]?.activeTeamTaskId).toBeNull();
     expect(database.messages).toHaveLength(1);
     expect(database.runs).toHaveLength(1);
     expect(database.teamTasks).toEqual([]);
     expect(database.teamTaskEvents).toEqual([]);
-    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(5);
+    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(6);
   });
 
   it("backs up AgentGuard version 3 data and preserves shared Agent history", async () => {
@@ -98,13 +98,47 @@ describe("JsonStore", () => {
     const store = new JsonStore(filePath);
     await store.initialize();
     const database = store.snapshot();
-    expect(database.version).toBe(5);
+    expect(database.version).toBe(6);
     expect(database.agents[0]?.activeTeamTaskId).toBeNull();
     expect(database.messages).toHaveLength(1);
     expect(database.runs).toHaveLength(1);
     expect(database.teamTasks).toEqual([]);
     expect(database.teamTaskEvents).toEqual([]);
     expect(JSON.parse(await readFile(filePath + ".v3-agentguard.backup", "utf8")).version).toBe(3);
+  });
+
+  it("migrates version 5 data by adding the shares table and backfilling receipt owners", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const timestamp = new Date().toISOString();
+    await writeFile(filePath, JSON.stringify({
+      version: 5,
+      users: [{ id: "user-alice" }, { id: "user-bob" }],
+      sessions: [], agents: [], messages: [], runs: [], grants: [],
+      teamTasks: [], teamTaskEvents: [],
+      resources: [{
+        id: "resource-bob-1", ownerUserId: "user-bob", name: "Brief", description: "",
+        filePath: "/tmp/brief.txt", sizeBytes: 10, isDemo: false, deletedAt: null,
+        createdAt: timestamp, updatedAt: timestamp,
+      }],
+      decisions: [{
+        id: "decision-1", humanUserId: "user-alice", humanName: "Alice Tan",
+        agentId: "agent-1", agentName: "Agent", agentPrincipalId: "principal-1",
+        action: "read", resourceId: "resource-bob-1", resourceName: "Brief",
+        outcome: "deny", reason: "RESOURCE_NOT_OWNED", grantId: null, runId: null,
+        previousReceiptHash: null, receiptHash: "stale", createdAt: timestamp,
+      }],
+    }));
+
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const database = store.snapshot();
+    expect(database.version).toBe(6);
+    expect(database.shares).toEqual([]);
+    expect(database.decisions[0]?.resourceOwnerUserId).toBe("user-bob");
+    expect(database.decisions[0]?.receiptHash).not.toBe("stale");
+    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(6);
   });
 
   it("does not publish a mutation in memory when persistence fails", async () => {

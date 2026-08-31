@@ -28,6 +28,26 @@ const MAX_HISTORY_LENGTH = 32_000;
 const MAX_HISTORY_EVENTS = 80;
 const now = () => new Date().toISOString();
 
+// A generic mention of a protected document ("Bob's document", "the shared file",
+// "contents of the report") with nothing attached — enough to stop the task and
+// ask for an attachment.
+const GENERIC_RESOURCE_HINT =
+  /\b(?:[a-z]+['’]s|protected|attached|shared|confidential|the|that|this)\s+(?:documents?|resources?|files?|briefs?|briefings?|reports?|docs?|dossiers?|memos?|sheets?|specs?|policy|policies|contracts?)\b/i;
+
+/** Crude singular-ising stem so "partnership brief" matches "Partnerships Brief". */
+function stemWord(word: string): string {
+  if (word.length < 4 || word.endsWith("ss")) return word;
+  return word.replace(/ies$/, "y").replace(/e?s$/, "");
+}
+
+function stemTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .map(stemWord);
+}
+
 const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
     z.string(),
@@ -114,15 +134,29 @@ export class TeamTaskService {
     });
   }
 
-  listTasks(): TeamTask[] {
+  /** Team Tasks belonging to the actor. Agents, tasks, and their conversation
+   * transcripts are strictly per-user; only protected files can cross accounts. */
+  listTasks(actor: RequestActor): TeamTask[] {
     return this.store
       .snapshot()
-      .teamTasks.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      .teamTasks.filter((task) => task.ownerUserId === actor.userId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   getTask(id: string): TeamTask {
     const task = this.store.snapshot().teamTasks.find((item) => item.id === id);
     if (!task) throw new HttpError(404, "Team Task not found");
+    return task;
+  }
+
+  /**
+   * Load a task only if the actor owns it. The route boundary calls this before
+   * returning a task, its events, or mutating it — a task started by another user
+   * must be invisible (404, not 403, so its existence never leaks).
+   */
+  assertTaskOwner(actor: RequestActor, id: string): TeamTask {
+    const task = this.getTask(id);
+    if (task.ownerUserId !== actor.userId) throw new HttpError(404, "Team Task not found");
     return task;
   }
 
@@ -146,6 +180,7 @@ export class TeamTaskService {
         .snapshot()
         .agents.filter(
           (agent) =>
+            agent.ownerUserId === actor.userId &&
             agent.id !== input.leadAgentId &&
             agent.status === "ready" &&
             !agent.activeTeamTaskId,
@@ -167,6 +202,21 @@ export class TeamTaskService {
       }
     }
 
+    // Resolve the protected resource the task needs — the attached one, or a
+    // single resource the objective names — before anything is provisioned.
+    const requiredResource = this.resolveRequiredResource(
+      actor,
+      input.objective,
+      input.resourceId ?? null,
+    );
+    if (requiredResource && agentSelection === "lead") {
+      throw new HttpError(
+        400,
+        "Attach a protected resource only when you choose the specialists yourself, so every participant can be authorized before the task starts.",
+        { code: "RESOURCE_WITH_LEAD_SELECTION" },
+      );
+    }
+
     const timestamp = now();
     const id = randomUUID();
     const participantIds = [input.leadAgentId, ...specialistIds];
@@ -175,7 +225,7 @@ export class TeamTaskService {
       ownerUserId: actor.userId,
       objective: input.objective.trim(),
       leadAgentId: input.leadAgentId,
-      resourceId: input.resourceId ?? null,
+      resourceId: requiredResource?.resourceId ?? null,
       specialistAgentIds: specialistIds,
       agentSelection,
       turnPolicy: null,
@@ -200,7 +250,10 @@ export class TeamTaskService {
     if (this.store.snapshot().teamTasks.some((item) => ["running", "paused"].includes(item.status))) {
       throw new HttpError(409, "Finish or stop the existing Team Task first");
     }
-    this.validateAvailableAgents(participantIds);
+    this.validateAvailableAgents(actor, participantIds);
+    if (requiredResource) {
+      await this.preflightResourceAccess(actor, requiredResource.resourceId, specialistIds);
+    }
     await this.workspaces.createTeamTaskWorkspace(task);
     await this.store.mutate((database) => {
       if (database.teamTasks.some((item) => ["running", "paused"].includes(item.status))) {
@@ -351,11 +404,23 @@ export class TeamTaskService {
           }
           const effectivePolicy = task.turnPolicy ?? decision.plan!.turnPolicy;
           if (decision.decision.type === "delegate" && effectivePolicy === "facilitated") {
+            const roster = this.plannedRoster(task, decision);
             if (!decision.decision.agentId) {
-              throw new Error("Lead must name the next specialist by agentId");
+              throw new Error(
+                "Name the next specialist in decision.agentId. Choose exactly one of: " +
+                  this.describePool(roster) + ".",
+              );
             }
-            if (!this.resolveAgentRef(this.plannedRoster(task, decision), decision.decision.agentId)) {
-              throw new Error("Lead selected an Agent outside the authorized specialist pool");
+            if (!this.resolveAgentRef(roster, decision.decision.agentId)) {
+              const namedItself =
+                this.resolveAgentRef([task.leadAgentId], decision.decision.agentId) !== null;
+              throw new Error(
+                (namedItself
+                  ? "You are the Lead and cannot delegate this turn to yourself. "
+                  : `"${decision.decision.agentId}" is not one of your authorized specialists. `) +
+                  "Choose exactly one of these, by id: " + this.describePool(roster) +
+                  ". If none fits, complete the task with what you have.",
+              );
             }
             if (this.specialistContributionCount(task.id) >= MAX_COLLABORATION_ROUNDS) {
               throw new Error("The collaboration round limit was reached; the Lead must complete with the available evidence");
@@ -587,16 +652,69 @@ export class TeamTaskService {
    * is applied this is the plan's proposed roster (when the user delegated Agent
    * selection); afterwards `specialistAgentIds` has already been narrowed to it.
    */
-  /** Resolve one Agent reference (UUID or case-insensitive name) within a pool. */
+  /**
+   * Resolve one Agent reference against a pool of Agent ids. The Lead frequently
+   * names a specialist instead of giving its UUID, and decorates the name
+   * ("the Budget Analyst", "Flight & Hotel Scout (finance)", "Agent: Weather
+   * Forecaster"). Accept an exact id, then progressively looser name matches,
+   * but only when the match is UNIQUE — an ambiguous ref stays unresolved so the
+   * caller can steer the Lead rather than guess.
+   */
   private resolveAgentRef(pool: string[], ref: string): string | null {
-    const trimmed = ref.trim();
-    if (pool.includes(trimmed)) return trimmed;
-    const match = this.store
-      .snapshot()
-      .agents.find(
-        (agent) => pool.includes(agent.id) && agent.name.trim().toLowerCase() === trimmed.toLowerCase(),
-      );
-    return match?.id ?? null;
+    const raw = ref.trim();
+    if (pool.includes(raw)) return raw;
+
+    const pooled = this.store.snapshot().agents.filter((agent) => pool.includes(agent.id));
+    const normalise = (value: string) =>
+      value
+        .toLowerCase()
+        .replace(/\(.*?\)/g, " ")
+        .replace(/&/g, " and ")
+        .replace(/^\s*(the|an?|agent|specialist|lead)\s+/g, " ")
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim()
+        .replace(/\s+/g, " ");
+
+    const target = normalise(raw);
+    if (!target) return null;
+
+    const unique = (matches: Agent[]): string | null =>
+      matches.length === 1 ? matches[0]!.id : null;
+
+    const exact = unique(pooled.filter((agent) => normalise(agent.name) === target));
+    if (exact) return exact;
+
+    const substring = unique(
+      pooled.filter((agent) => {
+        const name = normalise(agent.name);
+        return name.includes(target) || target.includes(name);
+      }),
+    );
+    if (substring) return substring;
+
+    const targetTokens = target.split(" ").filter(Boolean);
+    return unique(
+      pooled.filter((agent) => {
+        const nameTokens = normalise(agent.name).split(" ").filter(Boolean);
+        const [small, big] =
+          targetTokens.length <= nameTokens.length
+            ? [targetTokens, nameTokens]
+            : [nameTokens, targetTokens];
+        return small.length > 0 && small.every((token) => big.includes(token));
+      }),
+    );
+  }
+
+  /** Names + ids of a pool, for a corrective message the Lead can act on. */
+  private describePool(pool: string[]): string {
+    const agents = this.store.snapshot().agents;
+    return pool
+      .map((id) => {
+        const agent = agents.find((item) => item.id === id);
+        return agent ? `${agent.name} (id: ${agent.id})` : null;
+      })
+      .filter(Boolean)
+      .join(", ");
   }
 
   private poolNames(task: TeamTask): string {
@@ -770,11 +888,14 @@ export class TeamTaskService {
     return result.data;
   }
 
-  private validateAvailableAgents(ids: string[]): void {
+  private validateAvailableAgents(actor: RequestActor, ids: string[]): void {
     const database = this.store.snapshot();
     for (const id of ids) {
       const agent = database.agents.find((item) => item.id === id);
-      if (!agent) throw new HttpError(404, "Selected Agent not found");
+      // Another user's Agent must look identical to a missing one.
+      if (!agent || agent.ownerUserId !== actor.userId) {
+        throw new HttpError(404, "Selected Agent not found");
+      }
       if (agent.status !== "ready" || agent.activeTeamTaskId) {
         throw new HttpError(409, agent.name + " is not ready for a Team Task");
       }
@@ -902,6 +1023,149 @@ export class TeamTaskService {
     const user = this.store.snapshot().users.find((item) => item.id === task.ownerUserId);
     if (!user) throw new HttpError(409, "The Team Task owner no longer exists");
     return { userId: user.id, username: user.username, displayName: user.displayName };
+  }
+
+  /**
+   * Decide whether a Team Task needs a protected resource before it starts.
+   *
+   * A resource is *required* only when it's explicitly attached in the picker —
+   * that returns `{resourceId, resourceName}` and `preflightResourceAccess` runs.
+   *
+   * When nothing is attached but the objective still *refers* to a protected
+   * document — it names one in the catalog (plural-tolerant), or uses a generic
+   * phrase like "Bob's document" — the task is refused at the very start so no
+   * hand-off happens: `RESOURCE_NOT_ATTACHED` (pick it in the selector) when the
+   * named resource is one the actor could attach, `RESOURCE_ACCESS_DENIED` when
+   * it's protected and not shared with them.
+   */
+  private resolveRequiredResource(
+    actor: RequestActor,
+    objective: string,
+    explicitId: string | null,
+  ): { resourceId: string; resourceName: string } | null {
+    const catalog = this.security.listResources(actor);
+    if (explicitId) {
+      const picked = catalog.find((item) => item.id === explicitId);
+      if (!picked) {
+        throw new HttpError(403, "The attached protected resource no longer exists.", {
+          code: "RESOURCE_ACCESS_DENIED",
+          reason: "RESOURCE_NOT_FOUND",
+          resourceId: explicitId,
+        });
+      }
+      return { resourceId: picked.id, resourceName: picked.name };
+    }
+
+    const objectiveLower = objective.toLowerCase();
+    const objectiveTokens = stemTokens(objective);
+    const containsSequence = (needle: string[]): boolean =>
+      needle.length > 0 &&
+      objectiveTokens.some(
+        (_, index) =>
+          index + needle.length <= objectiveTokens.length &&
+          needle.every((token, offset) => objectiveTokens[index + offset] === token),
+      );
+
+    const named = catalog.filter((item) => {
+      if (objectiveLower.includes(item.id.toLowerCase())) return true;
+      const nameTokens = stemTokens(item.name);
+      if (nameTokens.length >= 2) return containsSequence(nameTokens);
+      // A single-word name only matches on a distinctive (>= 5 char) token.
+      return (
+        nameTokens.length === 1 &&
+        nameTokens[0]!.length >= 5 &&
+        objectiveTokens.includes(nameTokens[0]!)
+      );
+    });
+    const distinct = [...new Map(named.map((item) => [item.id, item])).values()];
+
+    if (distinct.length > 1) {
+      throw new HttpError(
+        422,
+        "The objective names more than one protected resource. Attach exactly one and start again.",
+        {
+          code: "MULTIPLE_RESOURCES_REFERENCED",
+          resources: distinct.map((item) => ({ id: item.id, name: item.name })),
+        },
+      );
+    }
+    if (distinct.length === 1) {
+      const only = distinct[0]!;
+      if (only.ownedByCurrentUser || only.sharedWithCurrentUser) {
+        throw new HttpError(
+          422,
+          `This objective refers to the protected resource “${only.name}”, but it isn't attached. ` +
+            `Select it in the “Protected document” selector and start the task again.`,
+          { code: "RESOURCE_NOT_ATTACHED", resourceId: only.id, resourceName: only.name },
+        );
+      }
+      const reason =
+        only.shareState === "revoked"
+          ? "SHARE_REVOKED"
+          : only.shareState === "expired"
+            ? "SHARE_EXPIRED"
+            : "SHARE_MISSING";
+      throw new HttpError(
+        403,
+        `Team Task blocked: the objective refers to “${only.name}”, which is protected and not ` +
+          `shared with you (${reason}). Ask its owner to share it, then start the task again.`,
+        { code: "RESOURCE_ACCESS_DENIED", reason, resourceId: only.id, resourceName: only.name },
+      );
+    }
+    if (GENERIC_RESOURCE_HINT.test(objective)) {
+      throw new HttpError(
+        422,
+        "This objective refers to a protected document, but none is attached. Select it in the " +
+          "“Protected document” selector and start the task again.",
+        { code: "RESOURCE_NOT_ATTACHED" },
+      );
+    }
+    return null;
+  }
+
+  /**
+   * Authorize every specialist against the required resource *before* the task
+   * is created. The first denial throws `RESOURCE_ACCESS_DENIED` and nothing is
+   * provisioned — the Lead never runs, so no hand-off happens. Each turn is
+   * re-checked later by `authorizeSpecialistTurn` to catch a mid-task revocation.
+   */
+  private async preflightResourceAccess(
+    actor: RequestActor,
+    resourceId: string,
+    specialistIds: string[],
+  ): Promise<void> {
+    if (this.config.runtimeProvider !== "container") {
+      throw new HttpError(409, "Protected resources require the disposable container Runtime", {
+        code: "RESOURCE_RUNTIME_UNAVAILABLE",
+      });
+    }
+    const agents = this.store.snapshot().agents;
+    for (const id of specialistIds) {
+      const agent = agents.find((item) => item.id === id);
+      if (!agent) throw new HttpError(404, "Selected Agent not found");
+      const { decision, resource } = await this.security.authorizeResourceRead(
+        actor,
+        agent,
+        resourceId,
+      );
+      if (!resource) {
+        throw new HttpError(
+          403,
+          `Team Task blocked: ${agent.name} cannot read “${decision.resourceName}” ` +
+            `(${decision.reason}). Give the owner's Agents this file via a capability lease, ` +
+            `or have the owner share it, then start the task again.`,
+          {
+            code: "RESOURCE_ACCESS_DENIED",
+            reason: decision.reason,
+            decisionId: decision.id,
+            resourceId,
+            resourceName: decision.resourceName,
+            agentId: agent.id,
+            agentName: agent.name,
+          },
+        );
+      }
+    }
   }
 
   /**

@@ -30,6 +30,7 @@ describe("HTTP boundary", () => {
         return task;
       },
       listTasks: () => [task],
+      assertTaskOwner: () => task,
       getTask: () => task,
       getEvents: () => [],
       verifyEventChain: () => true,
@@ -175,6 +176,51 @@ describe("HTTP boundary", () => {
         code: "unrecognized_keys",
         keys: ["ownerUserId"],
       })],
+    });
+    await app.close();
+  });
+
+  it("routes cross-user share creation and the account receipt feed", async () => {
+    const shareArgs: unknown[] = [];
+    const sharingSecurity = {
+      resolveSession: async () => ({
+        userId: "user-bob",
+        username: "bob",
+        displayName: "Bob Lim",
+      }),
+      createShare: async (...args: unknown[]) => {
+        shareArgs.push(args);
+        return { id: "share-1", state: "active", granteeName: "Alice Tan" };
+      },
+      listAccountReceipts: () => [{ id: "decision-1", action: "share", outcome: "allow" }],
+      verifyDecisionChain: () => true,
+    } as unknown as SecurityService;
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service, sharingSecurity);
+
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/resources/resource-bob-finance-report/shares",
+      payload: { purpose: "no" },
+    });
+    expect(bad.statusCode).toBe(400);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/resources/resource-bob-finance-report/shares",
+      payload: { granteeUserId: "user-alice", purpose: "Cross-team review" },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ share: { id: "share-1", state: "active" } });
+    expect(shareArgs.at(-1)).toMatchObject({
+      1: "resource-bob-finance-report",
+      2: "user-alice",
+    });
+
+    const feed = await app.inject({ method: "GET", url: "/api/account/receipts" });
+    expect(feed.statusCode).toBe(200);
+    expect(feed.json()).toMatchObject({
+      decisions: [{ action: "share" }],
+      chainValid: true,
     });
     await app.close();
   });

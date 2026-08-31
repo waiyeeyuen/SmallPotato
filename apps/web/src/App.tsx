@@ -6,13 +6,15 @@ import type {
   Message,
   PermissionGrant,
   PolicyDecision,
+  ResourceShare,
   ResourceSummary,
+  ShareableUser,
   SystemInfo,
   User,
 } from "./types";
 import { TeamTaskView } from "./TeamTaskView";
 
-type View = "playground" | "team" | "resources" | "access" | "audit";
+type View = "playground" | "team" | "resources" | "access" | "audit" | "sharing";
 
 const emptyAgent = {
   name: "",
@@ -29,9 +31,16 @@ const reasonLabels: Record<string, string> = {
   AGENT_NOT_OWNED: "Agent belongs to another user",
   RESOURCE_NOT_OWNED: "Resource belongs to another user",
   RESOURCE_NOT_FOUND: "Resource unavailable",
+  SHARE_ACTIVE: "Active cross-user share",
+  SHARE_MISSING: "Owner has not shared this file with you",
+  SHARE_REVOKED: "Share was revoked by the owner",
+  SHARE_EXPIRED: "Share expired",
+  SHARE_CREATED: "Owner granted a cross-user share",
+  SHARE_REVOKED_BY_OWNER: "Owner revoked a cross-user share",
 };
 
-function shortId(value: string): string {
+function shortId(value: string | null | undefined): string {
+  if (!value) return "—";
   return value.length > 15 ? value.slice(0, 8) + "…" + value.slice(-4) : value;
 }
 
@@ -160,6 +169,12 @@ export default function App() {
     description: "",
     content: "",
   });
+  const [shareableUsers, setShareableUsers] = useState<ShareableUser[]>([]);
+  const [ownerShares, setOwnerShares] = useState<ResourceShare[]>([]);
+  const [sharePanelResourceId, setSharePanelResourceId] = useState<string | null>(null);
+  const [shareForm, setShareForm] = useState({ granteeUserId: "", purpose: "", expiresAt: "" });
+  const [accountReceipts, setAccountReceipts] = useState<PolicyDecision[]>([]);
+  const [accountChainValid, setAccountChainValid] = useState(true);
   const [, setClock] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -173,6 +188,11 @@ export default function App() {
     [agents, selectedId],
   );
   const ownedResources = resources.filter((resource) => resource.ownedByCurrentUser);
+  // Resources an Agent of the current user is allowed to read: their own, plus
+  // any file another user has actively shared with them.
+  const accessibleResources = resources.filter(
+    (resource) => resource.ownedByCurrentUser || resource.sharedWithCurrentUser,
+  );
   const activeGrants = grants.filter((grant) => grant.state === "active");
 
   const refreshResources = useCallback(async () => {
@@ -196,6 +216,25 @@ export default function App() {
     );
   }, []);
 
+  const refreshShares = useCallback(async () => {
+    const [userResult, shareResult] = await Promise.all([
+      api.shareableUsers(),
+      api.ownerShares(),
+    ]);
+    setShareableUsers(userResult.users);
+    setOwnerShares(shareResult.shares);
+    setShareForm((current) => ({
+      ...current,
+      granteeUserId: current.granteeUserId || userResult.users[0]?.userId || "",
+    }));
+  }, []);
+
+  const refreshAccountReceipts = useCallback(async () => {
+    const result = await api.accountReceipts();
+    setAccountReceipts(result.decisions);
+    setAccountChainValid(result.chainValid);
+  }, []);
+
   const bootstrap = useCallback(async () => {
     const [agentResult, nextSystem, resourceResult] = await Promise.all([
       api.listAgents(),
@@ -211,7 +250,11 @@ export default function App() {
     setSystem(nextSystem);
     setResources(resourceResult.resources);
     setGrantResourceId(resourceResult.resources.find((resource) => resource.ownedByCurrentUser)?.id ?? "");
-  }, []);
+    await Promise.all([
+      refreshShares().catch(() => undefined),
+      refreshAccountReceipts().catch(() => undefined),
+    ]);
+  }, [refreshShares, refreshAccountReceipts]);
 
   const refreshAgentData = useCallback(async (agentId: string) => {
     const [messageResult, runResult, grantResult, decisionResult] = await Promise.all([
@@ -276,6 +319,14 @@ export default function App() {
       instructions: selected.instructions,
     });
   }, [selected]);
+
+  useEffect(() => {
+    if (view !== "sharing" || !user) return;
+    void Promise.all([
+      refreshAccountReceipts().catch(() => undefined),
+      refreshShares().catch(() => undefined),
+    ]);
+  }, [view, user, refreshAccountReceipts, refreshShares]);
 
   const pollRun = async (runId: string, agentId: string) => {
     if (polling.current.has(runId)) return;
@@ -511,6 +562,56 @@ export default function App() {
     }
   };
 
+  const submitShare = async (event: React.FormEvent, resourceId: string) => {
+    event.preventDefault();
+    if (!shareForm.granteeUserId || shareForm.purpose.trim().length < 3) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.createShare(resourceId, {
+        granteeUserId: shareForm.granteeUserId,
+        purpose: shareForm.purpose.trim(),
+        ...(shareForm.expiresAt
+          ? { expiresAt: new Date(shareForm.expiresAt).toISOString() }
+          : {}),
+      });
+      setShareForm((current) => ({ ...current, purpose: "", expiresAt: "" }));
+      setSharePanelResourceId(null);
+      await Promise.all([refreshResources(), refreshShares(), refreshAccountReceipts()]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revokeShare = async (resourceId: string, shareId: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.revokeShare(resourceId, shareId);
+      await Promise.all([refreshResources(), refreshShares(), refreshAccountReceipts()]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exportAccountReceipts = async () => {
+    try {
+      const blob = await api.accountReceiptExport();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "sharing-receipts.csv";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   if (user === undefined) {
     return <main className="auth-screen"><section className="auth-card"><div className="brand-mark">A</div><span className="eyebrow">Agent Launchpad</span><h1>Connecting to the control plane</h1><Spinner /></section></main>;
   }
@@ -581,7 +682,7 @@ export default function App() {
         {view === "team" ? (
           <TeamTaskView
             agents={agents}
-            resources={ownedResources}
+            resources={accessibleResources}
             onAgentsChanged={refreshAgents}
             onCreateAgent={() => {
               setForm(emptyAgent);
@@ -605,12 +706,13 @@ export default function App() {
             </header>
 
             <nav className="view-tabs" aria-label="Agent workspace">
-              {(["playground", "resources", "access", "audit"] as View[]).map((item) => (
+              {(["playground", "resources", "access", "audit", "sharing"] as View[]).map((item) => (
                 <button key={item} className={view === item ? "active" : ""} onClick={() => setView(item)}>
-                  {item === "playground" ? "Playground" : item === "resources" ? "Protected resources" : item === "access" ? "Access leases" : "Audit receipts"}
+                  {item === "playground" ? "Playground" : item === "resources" ? "Protected resources" : item === "access" ? "Access leases" : item === "audit" ? "Audit receipts" : "Sharing"}
                   {item === "resources" && <span>{ownedResources.length}</span>}
                   {item === "access" && <span>{activeGrants.length}</span>}
                   {item === "audit" && <span>{decisions.length}</span>}
+                  {item === "sharing" && <span>{ownerShares.filter((share) => share.state === "active").length}</span>}
                 </button>
               ))}
             </nav>
@@ -660,7 +762,7 @@ export default function App() {
                     <label htmlFor="resource-select">Protected resource</label>
                     <select id="resource-select" value={resourceId} onChange={(event) => setResourceId(event.target.value)}>
                       <option value="">No protected resource</option>
-                      {resources.map((resource) => <option key={resource.id} value={resource.id}>{resource.name} · {resource.ownerName}{resource.ownedByCurrentUser ? " · yours" : " · external"}</option>)}
+                      {resources.map((resource) => <option key={resource.id} value={resource.id}>{resource.name} · {resource.ownerName}{resource.ownedByCurrentUser ? " · yours" : resource.sharedWithCurrentUser ? " · shared with you" : " · external"}</option>)}
                     </select>
                     <span className={resourceId ? "armed" : ""}>{resourceId ? "Policy check armed" : "Standard run"}</span>
                   </div>
@@ -725,21 +827,75 @@ export default function App() {
                 <div className="resource-list-panel">
                   <div className="panel-heading"><div><span className="eyebrow">Ownership boundary</span><h2>Available resources</h2></div><span>{resources.length} visible</span></div>
                   <div className="resource-list">
-                    {resources.map((resource) => (
+                    {resources.map((resource) => {
+                      const resourceShares = ownerShares.filter((share) => share.resourceId === resource.id);
+                      const activeShareCount = resourceShares.filter((share) => share.state === "active").length;
+                      return (
                       <article className={"resource-item " + (resource.ownedByCurrentUser ? "resource-owned" : "resource-external")} key={resource.id}>
-                        <span className="resource-icon">{resource.ownedByCurrentUser ? "◇" : "⊘"}</span>
-                        <div><strong>{resource.name}</strong><p>{resource.description || "No description"}</p><small>{resource.ownerName} · {Math.max(1, Math.ceil(resource.sizeBytes / 1024))} KB · {resource.isDemo ? "demo fixture" : "user-created"}</small></div>
+                        <span className="resource-icon">{resource.ownedByCurrentUser ? "◇" : resource.sharedWithCurrentUser ? "⊞" : "⊘"}</span>
+                        <div>
+                          <strong>{resource.name}</strong>
+                          <p>{resource.description || "No description"}</p>
+                          <small>{resource.ownerName} · {Math.max(1, Math.ceil(resource.sizeBytes / 1024))} KB · {resource.isDemo ? "demo fixture" : "user-created"}</small>
+                          {!resource.ownedByCurrentUser && resource.sharedWithCurrentUser && (
+                            <small className="resource-share-note">Shared with you by {resource.ownerName}{resource.shareExpiresAt ? " · " + remaining(resource.shareExpiresAt) : " · no expiry"} · your Agents may read it</small>
+                          )}
+                          {resource.ownedByCurrentUser && activeShareCount > 0 && (
+                            <small className="resource-share-note">Shared with {activeShareCount} {activeShareCount === 1 ? "user" : "users"}</small>
+                          )}
+                          {resource.ownedByCurrentUser && sharePanelResourceId === resource.id && (
+                            <form className="share-panel" onSubmit={(event) => void submitShare(event, resource.id)}>
+                              <label>Share with
+                                <select value={shareForm.granteeUserId} onChange={(event) => setShareForm({ ...shareForm, granteeUserId: event.target.value })}>
+                                  {shareableUsers.map((candidate) => <option key={candidate.userId} value={candidate.userId}>{candidate.displayName}</option>)}
+                                </select>
+                              </label>
+                              <label>Purpose
+                                <input value={shareForm.purpose} onChange={(event) => setShareForm({ ...shareForm, purpose: event.target.value })} placeholder="Why this user needs read access" minLength={3} maxLength={240} required />
+                              </label>
+                              <label>Expiry (optional)
+                                <input type="datetime-local" value={shareForm.expiresAt} onChange={(event) => setShareForm({ ...shareForm, expiresAt: event.target.value })} />
+                              </label>
+                              <div className="share-panel-actions">
+                                <button type="button" className="button button-ghost" onClick={() => setSharePanelResourceId(null)}>Cancel</button>
+                                <button className="button button-primary" disabled={busy || !shareForm.granteeUserId || shareForm.purpose.trim().length < 3}>Grant read access</button>
+                              </div>
+                            </form>
+                          )}
+                          {resource.ownedByCurrentUser && resourceShares.length > 0 && (
+                            <div className="share-list">
+                              {resourceShares.map((share) => (
+                                <div className={"share-row share-" + share.state} key={share.id}>
+                                  <span className="share-state">{share.state}</span>
+                                  <span><strong>{share.granteeName}</strong> · {share.purpose}</span>
+                                  <span>{share.state === "active" ? (share.expiresAt ? remaining(share.expiresAt) : "no expiry") : share.state}</span>
+                                  {share.state === "active" && <button onClick={() => void revokeShare(resource.id, share.id)} disabled={busy}>Revoke</button>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                         <div className="resource-actions">
-                          <span>{resource.ownedByCurrentUser ? "Owned" : "External"}</span>
-                          {resource.ownedByCurrentUser && !resource.isDemo && (
+                          <span>{resource.ownedByCurrentUser ? "Owned" : resource.sharedWithCurrentUser ? "Shared" : "External"}</span>
+                          {resource.ownedByCurrentUser && (
                             <div>
-                              <button onClick={() => openResourceEditor(resource)} disabled={busy}>Edit</button>
-                              <button onClick={() => void deleteResource(resource)} disabled={busy}>Delete</button>
+                              <button
+                                onClick={() => {
+                                  setShareForm({ granteeUserId: shareableUsers[0]?.userId ?? "", purpose: "", expiresAt: "" });
+                                  setSharePanelResourceId((current) => current === resource.id ? null : resource.id);
+                                }}
+                                disabled={busy || shareableUsers.length === 0}
+                              >
+                                {sharePanelResourceId === resource.id ? "Close" : "Share"}
+                              </button>
+                              {!resource.isDemo && <button onClick={() => openResourceEditor(resource)} disabled={busy}>Edit</button>}
+                              {!resource.isDemo && <button onClick={() => void deleteResource(resource)} disabled={busy}>Delete</button>}
                             </div>
                           )}
                         </div>
                       </article>
-                    ))}
+                    );
+                    })}
                   </div>
                 </div>
               </section>
@@ -767,6 +923,54 @@ export default function App() {
                 </div>
               </section>
             )}
+
+            {view === "sharing" && (() => {
+              const shareEvents = accountReceipts.filter((item) => item.action !== "read");
+              const incomingReads = accountReceipts.filter(
+                (item) => item.action === "read" && item.resourceOwnerUserId === user.userId && item.humanUserId !== user.userId,
+              );
+              const outgoingReads = accountReceipts.filter(
+                (item) => item.action === "read" && item.humanUserId === user.userId && item.resourceOwnerUserId !== user.userId,
+              );
+              const renderRow = (decision: PolicyDecision) => (
+                <article className="receipt-row" role="row" key={decision.id}>
+                  <span><b className={"decision decision-" + decision.outcome}>{decision.outcome}</b><code>{shortId(decision.id)}</code><small>hash {shortId(decision.receiptHash)}</small></span>
+                  <span><strong>{decision.humanName}</strong>{decision.agentName ? <small>{decision.agentName}</small> : <small>account action</small>}</span>
+                  <span><strong>{decision.resourceName}</strong><small>{decision.action}</small></span>
+                  <span>{reasonLabels[decision.reason] ?? decision.reason}</span>
+                  <span>{formatTime(decision.createdAt)}</span>
+                </article>
+              );
+              return (
+                <section className="audit-panel">
+                  <div className="audit-header">
+                    <div><span className="eyebrow">Cross-user access</span><h2>Sharing activity</h2><p>Shares you issued, reads other people's Agents made on your files, and reads your Agents made on files shared with you — all hash-chained into one receipt log.</p></div>
+                    <div className="audit-tools"><span className={accountChainValid ? "chain-ok" : "chain-bad"}>{accountChainValid ? "Hash chain verified" : "Receipt chain invalid"}</span><button className="button button-ghost" onClick={() => void exportAccountReceipts()} disabled={accountReceipts.length === 0}>Export CSV</button></div>
+                  </div>
+
+                  <h3 className="sharing-group-title">Shares issued &amp; revoked</h3>
+                  <div className="receipt-table" role="table" aria-label="Share management">
+                    <div className="receipt-row receipt-head" role="row"><span>Decision</span><span>Actor</span><span>Resource</span><span>Reason</span><span>Time</span></div>
+                    {shareEvents.map(renderRow)}
+                    {shareEvents.length === 0 && <div className="empty-state">You have not shared any resource yet.</div>}
+                  </div>
+
+                  <h3 className="sharing-group-title">Reads on your resources</h3>
+                  <div className="receipt-table" role="table" aria-label="Reads on your resources">
+                    <div className="receipt-row receipt-head" role="row"><span>Decision</span><span>Actor</span><span>Resource</span><span>Reason</span><span>Time</span></div>
+                    {incomingReads.map(renderRow)}
+                    {incomingReads.length === 0 && <div className="empty-state">No other user's Agent has read your files.</div>}
+                  </div>
+
+                  <h3 className="sharing-group-title">Your reads on shared files</h3>
+                  <div className="receipt-table" role="table" aria-label="Your cross-account reads">
+                    <div className="receipt-row receipt-head" role="row"><span>Decision</span><span>Actor</span><span>Resource</span><span>Reason</span><span>Time</span></div>
+                    {outgoingReads.map(renderRow)}
+                    {outgoingReads.length === 0 && <div className="empty-state">Your Agents have not read another user's file.</div>}
+                  </div>
+                </section>
+              );
+            })()}
           </>
         ) : (
           <section className="no-agent"><div className="no-agent-art">A</div><span className="eyebrow">Agent Launchpad</span><h1>Your runtime is ready for an Agent.</h1><p>Create a workspace with its own principal and deny-by-default protected-resource access.</p><button className="button button-primary" onClick={() => setShowCreate(true)}>Create your first Agent</button></section>

@@ -1,4 +1,4 @@
-# PotatoGuard Judge Runbook
+# PotatoGuard Demo Runbook
 
 This guide provides a deterministic validation sequence for PotatoGuard's authorization middleware. All scenarios use fictional data only.
 
@@ -7,7 +7,7 @@ This guide provides a deterministic validation sequence for PotatoGuard's author
 ### 1. Validate the repository
 
 ```bash
-cd potato-guard
+cd SmallPotato
 npm run check
 ```
 
@@ -56,8 +56,15 @@ Visit **<http://localhost:3000>** and sign in as Alice:
 
 | Field | Value |
 |---|---|
-| **Username** | `alice` |
+| **Username** | `alice` | 
 | **Password** | `alice-potato` |
+
+Bob's Credentials (for Demo 3 below)
+| Field | Value |
+|---|---|
+| **Username** | `bob` | 
+| **Password** | `bob-potato` |
+
 
 You should see:
 - Sidebar with Agents, Team tasks, Protected resources, Sharing, and Audit receipts
@@ -178,7 +185,7 @@ This sequence demonstrates PotatoGuard's core capabilities in about 3 minutes.
 
 **Back as Alice:**
 
-1. Sign out and sign in as Alice again
+1. Sign in as Alice again
 2. Try to use *Finance Report* in an Agent Playground (same steps as Demo 2)
 3. Confirm it is denied with `SHARE_MISSING`
 4. Check **Audit receipts** → confirm the denial
@@ -244,7 +251,7 @@ The following scenarios can be validated beyond the 3-minute demo.
    - **Lead:** Trip Coordinator
    - **Specialists:** Select at least 2 agents (e.g., Analyst Agent, Cost Optimizer)
    - **Objective:** "Plan a 3-day trip to a European city with a $1000 budget"
-   - **Resource:** Partnerships Brief (attach it)
+   - **Resource:** Partnerships Brief (attach it in 'Protected Documents')
    - **Access mode:** "Authorize for this task" (one-click approval)
 3. Click **Start task**
 
@@ -374,26 +381,4 @@ fetch('http://localhost:3000/api/agents/b0b-agent-uuid')
 - Receipts include a `receiptHash` linking to the previous decision
 - The chain structure makes tampering detectable
 - Exported receipts can be independently verified using the raw data
-
----
-
-## Production Question
-
-**Q:** Is this production-ready?
-
-**A:** The authorization and Runtime mount boundary are **real** and **enforced in the backend**. The identities and storage are intentionally **local hackathon fixtures**.
-
-To deploy PotatoGuard to production:
-
-1. Replace local identities (Alice, Bob) with enterprise OIDC/SSO
-2. Replace JSON file persistence with a transactional authorization database
-3. Replace local audit receipts with an external WORM audit sink (e.g., AWS CloudTrail, HashiCorp Vault)
-4. Cryptographically sign receipts with an external authority
-5. Enable HTTPS with TLS 1.3, Secure cookies, and certificate pinning
-6. Move Ark API keys to a cloud secret manager
-7. Harden Runtime isolation with SELinux, AppArmor, or gVisor
-8. Integrate with a SIEM for anomaly detection
-9. Conduct a professional security audit
-
-The middleware pattern is production-grade; the supporting infrastructure is hackathon-scale.
 

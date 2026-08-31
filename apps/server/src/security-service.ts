@@ -194,20 +194,36 @@ export class SecurityService {
 
   listResources(actor: RequestActor) {
     const snapshot = this.store.snapshot();
-    return snapshot.resources.filter((resource) => !resource.deletedAt).map((resource) => ({
-      id: resource.id,
-      name: resource.name,
-      description: resource.description,
-      ownerUserId: resource.ownerUserId,
-      ownerName:
+    return snapshot.resources.filter((resource) => !resource.deletedAt).map((resource) => {
+      const ownedByCurrentUser = resource.ownerUserId === actor.userId;
+      const ownerName =
         snapshot.users.find((user) => user.id === resource.ownerUserId)?.displayName ??
-        "Unknown owner",
-      ownedByCurrentUser: resource.ownerUserId === actor.userId,
-      sizeBytes: resource.sizeBytes,
-      isDemo: resource.isDemo,
-      createdAt: resource.createdAt,
-      updatedAt: resource.updatedAt,
-    }));
+        "Unknown owner";
+      return {
+        id: resource.id,
+        name: resource.name,
+        description: ownedByCurrentUser
+          ? resource.description
+          : `Protected resource owned by ${ownerName}. Contents and private metadata are hidden.`,
+        ownerUserId: resource.ownerUserId,
+        ownerName,
+        ownedByCurrentUser,
+        sizeBytes: ownedByCurrentUser ? resource.sizeBytes : 0,
+        isDemo: resource.isDemo,
+        createdAt: resource.createdAt,
+        updatedAt: resource.updatedAt,
+      };
+    });
+  }
+
+  requireOwnedResource(actor: RequestActor, resourceId: string): ProtectedResource {
+    const resource = this.store.snapshot().resources.find(
+      (item) => item.id === resourceId && !item.deletedAt,
+    );
+    if (!resource || resource.ownerUserId !== actor.userId) {
+      throw new HttpError(403, "You can authorize only resources you own");
+    }
+    return resource;
   }
 
   async createResource(
@@ -325,6 +341,8 @@ export class SecurityService {
       resourceId,
       actions: ["read"],
       purpose: purpose.trim(),
+      source: "manual",
+      teamTaskId: null,
       grantedByUserId: actor.userId,
       createdAt: timestamp,
       expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
@@ -332,6 +350,70 @@ export class SecurityService {
     };
     await this.store.mutate((database) => database.grants.push(grant));
     return { ...grant, resourceName: resource.name, state: "active" as const };
+  }
+
+  async ensureTaskGrants(
+    actor: RequestActor,
+    agents: Agent[],
+    resourceId: string,
+    teamTaskId: string,
+    ttlSeconds = 30 * 60,
+  ): Promise<{ grants: PermissionGrant[]; issuedCount: number }> {
+    const resource = this.requireOwnedResource(actor, resourceId);
+    for (const agent of agents) this.requireAgentOwner(actor, agent);
+    const timestamp = now();
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+    return this.store.mutate((database) => {
+      const grants: PermissionGrant[] = [];
+      let issuedCount = 0;
+      for (const agent of agents) {
+        const existing = database.grants.find(
+          (grant) =>
+            grant.source === "team_task" &&
+            grant.teamTaskId === teamTaskId &&
+            grant.agentPrincipalId === agent.principalId &&
+            grant.resourceId === resourceId &&
+            grant.actions.includes("read") &&
+            grantState(grant) === "active",
+        );
+        if (existing) {
+          grants.push(structuredClone(existing));
+          continue;
+        }
+        const grant: PermissionGrant = {
+          id: randomUUID(),
+          agentPrincipalId: agent.principalId,
+          resourceId,
+          actions: ["read"],
+          purpose: `Read-only access for Team Task ${teamTaskId}`,
+          source: "team_task",
+          teamTaskId,
+          grantedByUserId: actor.userId,
+          createdAt: timestamp,
+          expiresAt,
+          revokedAt: null,
+        };
+        database.grants.push(grant);
+        grants.push(structuredClone(grant));
+        issuedCount += 1;
+      }
+      return { grants, issuedCount };
+    });
+  }
+
+  async revokeTaskGrants(teamTaskId: string): Promise<number> {
+    return this.store.mutate((database) => {
+      const timestamp = now();
+      let revoked = 0;
+      for (const grant of database.grants) {
+        if (grant.source !== "team_task" || grant.teamTaskId !== teamTaskId || grant.revokedAt) {
+          continue;
+        }
+        grant.revokedAt = timestamp;
+        revoked += 1;
+      }
+      return revoked;
+    });
   }
 
   async revokeGrant(actor: RequestActor, agent: Agent, grantId: string) {
@@ -350,6 +432,7 @@ export class SecurityService {
     actor: RequestActor,
     agent: Agent,
     resourceId: string,
+    context: { teamTaskId?: string } = {},
   ): Promise<{ decision: PolicyDecision; resource: ProtectedResource | null }> {
     return this.store.mutate((database) => {
       const resource = database.resources.find(
@@ -360,7 +443,9 @@ export class SecurityService {
           (grant) =>
             grant.agentPrincipalId === agent.principalId &&
             grant.resourceId === resourceId &&
-            grant.actions.includes("read"),
+            grant.actions.includes("read") &&
+            (grant.source === "manual" ||
+              (Boolean(context.teamTaskId) && grant.teamTaskId === context.teamTaskId)),
         )
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
       const active = matching.find((grant) => grantState(grant) === "active") ?? null;
@@ -386,6 +471,7 @@ export class SecurityService {
         outcome: reason === "GRANT_ACTIVE" ? "allow" as const : "deny" as const,
         reason,
         grantId: active?.id ?? matching[0]?.id ?? null,
+        teamTaskId: context.teamTaskId ?? null,
         createdAt: now(),
       };
       const decision: PolicyDecision = {

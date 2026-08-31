@@ -69,27 +69,29 @@ fictional content only.
 
 ## Team Task authorization
 
-A Team Task may name one protected resource. Every **specialist** turn is then
-authorized independently before the Runtime is touched; the Lead is never granted
-the document, so delegation cannot widen data access.
+A Team Task may attach one resource owned by the signed-in user. Every
+**specialist** turn is authorized independently before the Runtime is touched;
+the Lead is never granted the document, so delegation cannot widen data access.
 
 | Step | You do | System does | Show judges |
 | --- | --- | --- | --- |
-| 1 | Create a protected resource the team needs, e.g. **Tokyo Trip Brief**. | Writes a server-owned `0600` file; returns metadata only. | The resource card; content is not displayed. |
-| 2 | Start a Team Task with a Lead, two specialists, and that document selected. | Reserves the roster and runs the Lead's first turn. | `coordination_plan`, then the first hand-off. |
-| 3 | Wait. | The first specialist turn is refused; the task **pauses**, every Agent returns to `ready`, and a `DENY` event is written. | Paused banner naming the Agent and `GRANT_MISSING`; the red **Access decision** row in the Activity log. |
-| 4 | Issue a read lease to **each** specialist for that resource. | Creates one lease per principal + read + resource + expiry. | Active state and countdown. |
-| 5 | Press **Resume**. | The Lead reviews the interruption and re-delegates; the authorized turn mounts the file read-only at `/authorized-resources/<id>.txt`. | Green **Access decision · ALLOW** row; the answer quotes the document. |
-| 6 | Open the Activity log and Audit receipts. | Verifies both hash chains. | `eventsVerified` true, **Hash chain verified**, and the decisions correlated to the turns that caused them. |
+| 1 | Create a protected resource the team needs, e.g. **Tokyo Travel Profile**. | Writes a server-owned `0600` file; returns metadata only. | The resource card; content is not displayed. |
+| 2 | Start a Team Task with a Lead, two specialists, the document, and **Authorize for this task**. | Records consent and creates separate `read + resource + task ID + expiry` capabilities for the selected specialists. | Green **Task access issued** event; no account-wide or Lead access. |
+| 3 | Wait for the Lead's hand-off. | Validates the next Agent against the roster, then checks that specialist's capability before execution. | `coordination_plan`, delegation, then **Access decision · ALLOW**. |
+| 4 | Let both specialists contribute. | Mounts the file read-only for each approved disposable turn and returns actor-labelled results to the Lead. | Answer uses real protected constraints; the Lead sees the transcript, not the file. |
+| 5 | Let the Lead complete, or press **Stop**. | Releases the roster and revokes every task capability. | **Task access closed** event and revoked `task-scoped` entries under Access leases. |
+| 6 | Open Activity log and Audit receipts. | Verifies both hash chains and correlates policy decisions to the Team Task ID. | `eventsVerified` true, **Hash chain verified**, handoffs, ALLOW rows, and terminal revocation. |
 
-Authorization is per **turn**, not per task: a task with several specialist turns
-produces one `ALLOW` receipt per turn, each against a live lease.
+Authorization is per **turn** even when consent is per task: several specialist
+turns produce several `ALLOW` receipts against capabilities that cannot be reused
+outside that task.
 
 ### Team Task denial cases
 
 | Case | Action | Expected result |
 | --- | --- | --- |
-| No lease | Start a task on a resource with no lease issued. | First specialist turn refused, `GRANT_MISSING`, task paused, no container run. |
+| Manual approval | Choose **Require manual approval** and start without leases. | First specialist turn refused, `GRANT_MISSING`, task paused, no container run; issue leases and Resume. |
+| Wrong task context | Try to reuse an automatic task grant in Playground or another task. | `GRANT_MISSING`; a task-bound grant is ignored outside its task ID. |
 | Partial leases | Lease only one of two specialists. | The task pauses again when the Lead reaches the un-leased Agent. |
 | Revoked mid-task | Revoke a lease while the task is running. | The next specialist turn is refused with `GRANT_REVOKED` and the task pauses. |
 | Resource deleted mid-task | Delete the protected resource while a task references it. | The next specialist turn is refused with `RESOURCE_NOT_FOUND` and the task pauses. |
@@ -101,10 +103,12 @@ produces one `ALLOW` receipt per turn, each against a live lease.
 
 - Try to start with fewer than two ready Agents. The UI explains what is missing.
 - Try to submit without an objective or specialist. The start control stays disabled.
-- Start one Team Task, then attempt `POST /api/team-tasks` for another through
-  DevTools. The API returns HTTP 409; the first task is unchanged.
+- Start one Team Task, then attempt `POST /api/team-tasks` for another as the
+  same user. The API returns HTTP 409; Bob can still run his own isolated task.
 - Send an unrecognized creation field such as `currentAgentId` through DevTools.
   The API returns HTTP 400; workflow ownership cannot be injected by the browser.
+- As Bob, request Alice's task ID or attempt to stop/resume it. Every operation
+  returns 404; Alice's task and event chain are not disclosed.
 
 ### Stop and recovery
 
@@ -182,7 +186,7 @@ input. The automated HTTP-boundary test proves the same case in `npm run check`.
 | Case | Action | Expected result |
 | --- | --- | --- |
 | Wrong password | Sign in with any wrong password. | Generic 401; no indication whether a username exists. |
-| Anonymous API | Clear site cookies and call `/api/agents`. | 401; UI returns to sign-in. |
+| Anonymous API | Clear site cookies and call `/api/agents` or `/api/team-tasks`. | 401; UI returns to sign-in. |
 | Page reload during Run | Reload while a Run is queued/running. | Session and selected Agent recover; polling resumes until terminal state. |
 | Stopped Agent | Stop the Agent, then try to send. | Composer is disabled; start restores it. |
 | Foreign Agent URL | As Bob, request an Alice Agent UUID directly. | 404, preventing ownership enumeration. |

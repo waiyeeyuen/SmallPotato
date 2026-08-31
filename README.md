@@ -8,17 +8,17 @@ Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user hackathon application, not a multi-tenant production
-> service. It includes coordination audit events and disposable Runtime
-> containers, but it does not provide end-user identity or production hardening.
-> Do not use production data or credentials. See [SECURITY.md](SECURITY.md).
+> This is a multi-user hackathon proof of concept, not a production identity
+> system. Alice and Bob are local fixtures backed by hashed passwords and
+> server sessions; use fictional data only. See [SECURITY.md](SECURITY.md).
 
 ## Track 1 submission: Bouncer
 
-PotatoGuard separates the human operating the platform from the Agent acting
-for that human. A protected file is mounted into the disposable Agent Runtime
-only when a scoped, unexpired, unrevoked capability permits the read. Denied
-files never enter the Runtime.
+PotatoGuard is policy-governed multi-Agent middleware. It separates the human
+operating the platform from every Agent principal, checks both Agent ownership
+and protected-data authority on the server, and coordinates specialists through
+a persistent Lead-controlled workflow. A protected file enters a disposable
+Runtime only as an approved read-only mount. Denied files never enter it.
 
 The submission includes:
 
@@ -33,6 +33,8 @@ The submission includes:
 - Username/password login with scrypt password hashes and HttpOnly sessions
 - Per-user Agent ownership and a separate principal for every Agent
 - Time-limited capability leases scoped to one Agent, action, and resource
+- One-click Team Task consent that issues separate task-bound capabilities to
+  the specialist roster and revokes them automatically at completion or stop
 - Protected-resource create, metadata/content replacement, and safe deletion
 - Backend policy enforcement before Agent execution
 - Read-only protected-file mounts in disposable local Runtime containers
@@ -41,6 +43,8 @@ The submission includes:
 - Browser-supplied human/owner IDs rejected at the HTTP boundary
 - React and TypeScript Web UI
 - Agent create, edit, start, stop, delete, and multi-turn chat
+- Per-user Team Task history and controls; another signed-in user cannot inspect,
+  stop, resume, or populate a task with foreign Agents
 - Team Tasks with transcript-aware dynamic specialist routing, shared versioned state, and a shared workspace
 - Live coordination progress, contextual handoffs, retry/failure evidence, stop/resume, and clean consecutive tasks
 - Fastify control plane with asynchronous Run state
@@ -142,7 +146,17 @@ later messages.
 
 Select **Team tasks** in the sidebar (the pre-seeded Agents are ready to use, or
 create your own). Choose one Lead, one or more specialists, and describe a shared
-objective. The selected specialists
+objective. Optionally attach one of the signed-in user's protected documents.
+The recommended **Authorize for this task** option records explicit consent,
+issues a distinct read-only capability to each final specialist, restricts every
+capability to this task ID, and revokes all of them at a terminal outcome. The
+Lead receives only metadata and coordination context, never the raw document.
+
+For a deliberate failure-and-recovery exercise, choose **Require manual
+approval**. The first specialist without a valid manual lease is denied before a
+Runtime starts, the task pauses, and it can be resumed after approval.
+
+The selected specialists
 form an authorized pool rather than a fixed sequence. After each contribution, the Lead
 receives the updated actor-labelled transcript and dynamically selects the specialist
 best suited to build on, refine, verify, or challenge the conversation. Specialists also
@@ -298,6 +312,43 @@ npm run check
 terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
+
+The automated suite includes authentication, foreign-Agent and foreign-task
+isolation, cross-user resource denial, missing/revoked/expired grants,
+task-capability non-reuse, terminal revocation, read-only Runtime mounts,
+coordinator recovery, and hash-chain tamper detection.
+
+## Judging evidence
+
+The current event rules score four criteria equally. This repository maps them
+to visible and testable evidence rather than slide-only claims:
+
+| Criterion | Submission evidence |
+| --- | --- |
+| Technical execution | Server-resolved sessions, per-Agent principals, task-bound capabilities, pre-Runtime policy checks, read-only container mounts, persistent coordination state, structured Lead decisions, retries, and two verified receipt chains |
+| Innovation and problem insight | Treats delegation authority and data authority as independent; human ownership does not silently become standing Agent privilege |
+| Feasibility and practicality | One-click task consent solves lease fatigue; manual approval remains for high-risk workflows; Docker SOP, health checks, migrations, CSV evidence, and automated tests make the demo reproducible |
+| Impact and relevance | Enables useful multi-Agent work over private context while preserving tenant isolation, least privilege, attribution, revocation, and failure recovery |
+
+See the [official rules](https://tiktoktechjam2026.devpost.com/rules) for the
+authoritative wording and [UNIFIED_DEMO.md](docs/UNIFIED_DEMO.md) for the exact
+three-minute proof.
+
+## Honest limitations
+
+- Local seeded users and a single-process JSON store replace production OIDC and
+  a transactional policy database.
+- Hash chains make mutation detectable but are not signed or written to an
+  external append-only/WORM audit system.
+- Protected actions are intentionally read-only; there is no write-capability
+  workflow in this submission.
+- The coordinator serializes turns within a task and permits one open task per
+  user. Production would add a durable queue and per-workspace locks.
+- Task capabilities expire after 30 minutes as a crash-safe upper bound and are
+  also revoked on completion, failure, or explicit stop.
+- Local Runtime containers share the host Codex configuration/session store so
+  existing conversations can resume. Protected vault files are never stored
+  there, but production must isolate Codex state per Agent principal.
 
 ## Documentation
 

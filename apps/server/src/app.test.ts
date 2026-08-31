@@ -23,16 +23,17 @@ describe("HTTP boundary", () => {
     const task = { id: "00000000-0000-4000-8000-000000000001", objective: "Ship a feature" };
     const createArgs: unknown[] = [];
     const createActors: unknown[] = [];
+    const readActors: unknown[] = [];
     const teamTasks = {
       createTask: async (actor: unknown, input: unknown) => {
         createActors.push(actor);
         createArgs.push(input);
         return task;
       },
-      listTasks: () => [task],
-      getTask: () => task,
-      getEvents: () => [],
-      verifyEventChain: () => true,
+      listTasks: (actor: unknown) => { readActors.push(actor); return [task]; },
+      getTask: (actor: unknown) => { readActors.push(actor); return task; },
+      getEvents: (actor: unknown) => { readActors.push(actor); return []; },
+      verifyEventChain: (actor: unknown) => { readActors.push(actor); return true; },
     } as unknown as TeamTaskService;
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service, security, teamTasks);
     const invalid = await app.inject({ method: "POST", url: "/api/team-tasks", payload: { objective: "Ship", leadAgentId: "bad", specialistAgentIds: [] } });
@@ -89,6 +90,43 @@ describe("HTTP boundary", () => {
       events: [],
       eventsVerified: true,
     });
+    expect(readActors).toHaveLength(3);
+    expect(readActors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ userId: "user-alice" }),
+    ]));
+    await app.close();
+  });
+
+  it("requires a valid human session for Team Task data and controls", async () => {
+    const unauthorizedSecurity = {
+      resolveSession: async () => { throw new HttpError(401, "Sign in required"); },
+    } as unknown as SecurityService;
+    const teamTasks = {
+      listTasks: () => { throw new Error("must not be reached"); },
+      getTask: () => { throw new Error("must not be reached"); },
+      getEvents: () => { throw new Error("must not be reached"); },
+      verifyEventChain: () => { throw new Error("must not be reached"); },
+      stopTask: () => { throw new Error("must not be reached"); },
+      resumeTask: () => { throw new Error("must not be reached"); },
+    } as unknown as TeamTaskService;
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test" }),
+      service,
+      unauthorizedSecurity,
+      teamTasks,
+    );
+    const taskId = "00000000-0000-4000-8000-000000000001";
+
+    for (const request of [
+      { method: "GET" as const, url: "/api/team-tasks" },
+      { method: "GET" as const, url: `/api/team-tasks/${taskId}` },
+      { method: "POST" as const, url: `/api/team-tasks/${taskId}/stop` },
+      { method: "POST" as const, url: `/api/team-tasks/${taskId}/resume` },
+    ]) {
+      const response = await app.inject(request);
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toMatchObject({ error: "Sign in required" });
+    }
     await app.close();
   });
 

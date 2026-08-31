@@ -33,6 +33,7 @@ const createTeamTaskBody = z.object({
   specialistAgentIds: z.array(z.string().uuid()).max(20).default([]),
   agentSelection: z.enum(["user", "lead"]).optional(),
   resourceId: z.string().trim().min(1).max(120).optional(),
+  resourceAccessMode: z.enum(["manual", "task"]).optional(),
 }).strict().refine(
   (value) => value.agentSelection === "lead" || value.specialistAgentIds.length >= 1,
   { message: "Select at least one specialist", path: ["specialistAgentIds"] },
@@ -68,13 +69,14 @@ function readCookie(header: string | undefined, name: string): string | undefine
   return undefined;
 }
 
-function sessionCookie(token: string, maxAge: number): string {
+function sessionCookie(token: string, maxAge: number, secure: boolean): string {
   return [
     SESSION_COOKIE + "=" + encodeURIComponent(token),
     "Path=/",
     "HttpOnly",
     "SameSite=Strict",
     "Max-Age=" + maxAge,
+    ...(secure ? ["Secure"] : []),
   ].join("; ");
 }
 
@@ -175,7 +177,10 @@ export async function createApp(
   app.post("/api/login", async (request, reply) => {
     const body = loginBody.parse(request.body);
     const result = await security.login(body.username, body.password);
-    reply.header("Set-Cookie", sessionCookie(result.token, 8 * 60 * 60));
+    reply.header(
+      "Set-Cookie",
+      sessionCookie(result.token, 8 * 60 * 60, config.nodeEnv === "production"),
+    );
     return { user: result.user, expiresAt: result.expiresAt };
   });
 
@@ -184,7 +189,7 @@ export async function createApp(
   app.post("/api/logout", async (request, reply) => {
     const token = readCookie(request.headers.cookie, SESSION_COOKIE);
     if (token) await security.logout(token);
-    reply.header("Set-Cookie", sessionCookie("", 0));
+    reply.header("Set-Cookie", sessionCookie("", 0, config.nodeEnv === "production"));
     return { ok: true };
   });
 
@@ -257,7 +262,9 @@ export async function createApp(
   });
 
   if (teamTasks) {
-    app.get("/api/team-tasks", async () => ({ tasks: teamTasks.listTasks() }));
+    app.get("/api/team-tasks", async (request) => ({
+      tasks: teamTasks.listTasks(await actorFor(request)),
+    }));
 
     app.post("/api/team-tasks", async (request, reply) => {
       const body = createTeamTaskBody.parse(request.body);
@@ -267,21 +274,22 @@ export async function createApp(
 
     app.get("/api/team-tasks/:id", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
+      const actor = await actorFor(request);
       return {
-        task: teamTasks.getTask(id),
-        events: teamTasks.getEvents(id),
-        eventsVerified: teamTasks.verifyEventChain(id),
+        task: teamTasks.getTask(actor, id),
+        events: teamTasks.getEvents(actor, id),
+        eventsVerified: teamTasks.verifyEventChain(actor, id),
       };
     });
 
     app.post("/api/team-tasks/:id/stop", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
-      return { task: await teamTasks.stopTask(id) };
+      return { task: await teamTasks.stopTask(await actorFor(request), id) };
     });
 
     app.post("/api/team-tasks/:id/resume", async (request) => {
       const { id } = teamTaskIdParams.parse(request.params);
-      return { task: await teamTasks.resumeTask(id) };
+      return { task: await teamTasks.resumeTask(await actorFor(request), id) };
     });
   }
 
@@ -349,7 +357,7 @@ export async function createApp(
     const decisions = security.listDecisions(actor, service.getAgent(actor, id));
     const escape = (value: unknown) => '"' + String(value ?? "").replaceAll('"', '""') + '"';
     const rows = [
-      ["decision_id", "human", "agent", "agent_principal", "action", "resource", "outcome", "reason", "grant_id", "run_id", "receipt_hash", "created_at"],
+      ["decision_id", "human", "agent", "agent_principal", "action", "resource", "outcome", "reason", "grant_id", "run_id", "team_task_id", "receipt_hash", "created_at"],
       ...decisions.map((decision) => [
         decision.id,
         decision.humanName,
@@ -361,6 +369,7 @@ export async function createApp(
         decision.reason,
         decision.grantId,
         decision.runId,
+        decision.teamTaskId,
         decision.receiptHash,
         decision.createdAt,
       ]),

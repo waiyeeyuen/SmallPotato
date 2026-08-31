@@ -1,37 +1,24 @@
 #!/usr/bin/env node
-/**
- * Pre-flight for the demo recording.
- *
- * Verifies every precondition the take depends on, and resets the small amount
- * of state a previous take leaves behind. Run this before every recording.
- *
- *   node prepare.mjs           # check, and recreate a specialist if it carries
- *                              # any lease history (required for GRANT_MISSING)
- *   node prepare.mjs --fresh   # recreate both specialists even when clean
- *
- * The demo is ONE workflow: a team task on a protected document that is denied
- * mid-flight, leased, and resumed. There is no separate Playground half, so the
- * old Launch Analyst / Finance Report preconditions are gone.
- */
+/** Prepare a deterministic, non-destructive PotatoGuard recording state. */
 
 import { execFileSync } from "node:child_process";
 
 const BASE = process.env.DEMO_BASE_URL ?? "http://localhost:3000";
-const FRESH = process.argv.includes("--fresh");
-
-const BRIEF = "Tokyo Trip Brief";
-const BRIEF_DESCRIPTION = "Protected trip constraints the team must plan against.";
-const BRIEF_CONTENT = [
-  "Travellers: 2. Budget: US$3000 all-in.",
-  "Avoid the first week of April (company offsite).",
-  "Prefer a walkable neighbourhood with fast airport access.",
-  "One splurge dinner is approved; no guided tours.",
+const SMOKE = process.argv.includes("--smoke");
+const PROFILE = "Tokyo Travel Profile";
+const PROFILE_DESCRIPTION = "Alice's protected dates, budget, and travel preferences.";
+const PROFILE_CONTENT = [
+  "Destination: Tokyo, Japan",
+  "Travel dates: 14-18 September 2026 (4 nights)",
+  "Travellers: 2 adults",
+  "Total ground budget: SGD 2,800 excluding international flights",
+  "Stay preference: walkable neighbourhood with direct airport access",
+  "Pace: at most two major activities per day; one slow morning",
+  "Food: one traveller is pescatarian; reserve one omakase splurge dinner",
+  "Interests: design, neighbourhood walks, stationery, and local food",
+  "Avoid: theme parks, guided bus tours, and nightlife-heavy plans",
 ].join("\n");
-
-const LEAD = "Trip Coordinator";
-// Exactly two. Every specialist turn is gated, so each needs its own lease, and
-// two is the largest roster you can lease in one visit to the Access leases view.
-const SPECIALISTS = ["Flight & Hotel Scout", "Budget Analyst"];
+const TEAM = ["Trip Coordinator", "Flight & Hotel Scout", "Budget Analyst"];
 
 let cookie = "";
 const problems = [];
@@ -54,19 +41,39 @@ async function call(path, options = {}) {
   return body;
 }
 
-function ok(label) { console.log(`  ok    ${label}`); }
-function bad(label) { console.log(`  FAIL  ${label}`); problems.push(label); }
-function note(label) { console.log(`  note  ${label}`); notes.push(label); }
+const ok = (message) => console.log(`  ok    ${message}`);
+const bad = (message) => { console.log(`  FAIL  ${message}`); problems.push(message); };
+const note = (message) => { console.log(`  note  ${message}`); notes.push(message); };
+
+function repairRuntimeImageTag(engine, image) {
+  const run = (args) => execFileSync(engine, args, { encoding: "utf8", timeout: 10_000 });
+  try {
+    run(["image", "inspect", image]);
+    return "already-ok";
+  } catch {
+    // Look for an intact untagged image before declaring the Runtime unavailable.
+  }
+  try {
+    const id = run(["images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"])
+      .split("\n")
+      .find((line) => line.startsWith(image + " "))
+      ?.split(" ")[1];
+    if (!id) return "image-absent";
+    run(["tag", id, image]);
+    run(["image", "inspect", image]);
+    return "repaired";
+  } catch {
+    return "engine-unreachable";
+  }
+}
 
 console.log(`\nPotatoGuard demo pre-flight against ${BASE}\n`);
 
-// 1. Server reachable and signed in as Alice.
 try {
   await call("/api/health");
   ok("server is reachable");
 } catch {
-  bad(`server is not reachable at ${BASE} — run "npm run poc" first`);
-  console.log("\nAborting: nothing else can be checked.\n");
+  bad(`server is not reachable at ${BASE} - run "npm run poc" first`);
   process.exit(1);
 }
 
@@ -74,171 +81,103 @@ await call("/api/login", {
   method: "POST",
   body: JSON.stringify({ username: "alice", password: "alice-potato" }),
 });
-ok("signed in as alice");
+ok("signed in as Alice");
 
-// 2. The runtime banner must be clear, or it sits across every frame of the video.
-//    A container Runtime is also mandatory here: authorizeSpecialistTurn pauses
-//    the task outright when the provider is anything else.
-const system = await call("/api/system");
-if (system.arkConfigured) ok(`ARK configured (${system.arkModel})`);
-else bad("ARK_API_KEY / ARK_MODEL missing — agent runs will fail");
-
+let system = await call("/api/system");
+if (system.arkConfigured) ok(`Ark configuration present (${system.arkModel})`);
+else bad("ARK_API_KEY or ARK_MODEL is missing");
 if (system.runtimeProvider !== "container") {
-  bad(
-    `runtime provider is "${system.runtimeProvider}", not "container".\n` +
-    "        Protected resources require the disposable container Runtime; the\n" +
-    "        task would pause with a Runtime message instead of a policy denial.",
-  );
-}
-
-/**
- * Docker Desktop's containerd image store intermittently drops the
- * volc-agent-runtime:local reference: `docker images` still lists the row, but
- * `docker image inspect repo:tag` fails, which is exactly the check the server
- * runs in ContainerCodexRunner.isAvailable(). The image itself is intact and
- * still resolves by ID, so re-applying the tag restores it.
- */
-function repairRuntimeImageTag(engine, image) {
-  const run = (args) => execFileSync(engine, args, { encoding: "utf8", timeout: 10_000 });
-  try {
-    run(["image", "inspect", image]);
-    return "already-ok";
-  } catch {
-    // fall through to repair
-  }
-  let id = "";
-  try {
-    id = run(["images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"])
-      .split("\n")
-      .find((line) => line.startsWith(image + " "))
-      ?.split(" ")[1] ?? "";
-  } catch {
-    return "engine-unreachable";
-  }
-  if (!id) return "image-absent";
-  try {
-    run(["tag", id, image]);
-    run(["image", "inspect", image]);
-    return "repaired";
-  } catch {
-    return "repair-failed";
-  }
-}
-
-if (system.codexAvailable) {
-  ok(`runtime available (${system.runtime})`);
-} else if (system.runtimeProvider === "container") {
-  const engine = system.containerEngine ?? "docker";
+  bad(`Runtime provider is ${system.runtimeProvider}; protected files require container`);
+} else if (!system.codexAvailable) {
   const image = process.env.CONTAINER_RUNTIME_IMAGE ?? "volc-agent-runtime:local";
-  const result = repairRuntimeImageTag(engine, image);
-
+  const result = repairRuntimeImageTag(system.containerEngine ?? "docker", image);
   if (result === "repaired") {
-    const recheck = await call("/api/system");
-    if (recheck.codexAvailable) {
-      note(`"${image}" had lost its tag reference — re-tagged it, runtime is available again`);
-      ok(`runtime available (${recheck.runtime})`);
-    } else {
-      bad(`re-tagged "${image}" but the server still reports the runtime unavailable`);
-    }
-  } else if (result === "image-absent") {
-    bad(`runtime image "${image}" does not exist — build it before recording`);
-  } else if (result === "engine-unreachable") {
-    bad(`${engine} is not reachable — start it before recording`);
-  } else {
-    bad(
-      `runtime unavailable and "${image}" could not be repaired.\n` +
-      "        The yellow 'Runtime check' banner would show in every frame.\n" +
-      `        Check manually:  ${engine} image inspect ${image}`,
-    );
+    system = await call("/api/system");
+    note(`repaired the ${image} tag`);
   }
-} else {
-  bad("runtime unavailable — the yellow 'Runtime check' banner will show in every frame.");
+  if (!system.codexAvailable) bad(`container Runtime unavailable (${result})`);
 }
+if (system.codexAvailable) ok(`Runtime available (${system.runtime})`);
 
-// 3. An aborted take leaves its team task behind. A running OR PAUSED task keeps
-//    the start form hidden, and this demo ends every failed take in "paused".
 const { tasks } = await call("/api/team-tasks");
-const open = tasks.filter((t) => ["running", "queued", "paused"].includes(t.status));
-if (open.length === 0) {
-  ok("no team task is open");
-} else {
-  for (const task of open) {
-    await call("/api/team-tasks/" + task.id + "/stop", { method: "POST" });
-  }
-  note(`stopped ${open.length} leftover team task(s) (${open.map((t) => t.status).join(", ")})`);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const current = (await call("/api/agents")).agents;
-    if ([LEAD, ...SPECIALISTS].every((n) => !current.find((a) => a.name === n)?.activeTeamTaskId)) break;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
+const open = tasks.filter((task) => ["running", "queued", "paused"].includes(task.status));
+for (const task of open) {
+  await call(`/api/team-tasks/${task.id}/stop`, { method: "POST" });
 }
+if (open.length) note(`stopped ${open.length} leftover Alice task(s)`);
+else ok("no Alice Team Task is open");
 
-// 4. The protected document the whole task is authorized against.
 let { resources } = await call("/api/resources");
-let brief = resources.find((r) => r.name === BRIEF && r.ownedByCurrentUser);
-if (!brief) {
-  const created = await call("/api/resources", {
+let profile = resources.find((resource) => resource.name === PROFILE && resource.ownedByCurrentUser);
+if (!profile) {
+  profile = (await call("/api/resources", {
     method: "POST",
-    body: JSON.stringify({ name: BRIEF, description: BRIEF_DESCRIPTION, content: BRIEF_CONTENT }),
+    body: JSON.stringify({
+      name: PROFILE,
+      description: PROFILE_DESCRIPTION,
+      content: PROFILE_CONTENT,
+    }),
+  })).resource;
+  note(`created protected resource "${PROFILE}"`);
+} else {
+  await call(`/api/resources/${profile.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      name: PROFILE,
+      description: PROFILE_DESCRIPTION,
+      content: PROFILE_CONTENT,
+    }),
   });
-  brief = created.resource;
-  note(`created protected resource "${BRIEF}"`);
+  ok(`refreshed protected resource "${PROFILE}"`);
 }
-ok(`protected resource "${BRIEF}" present and owned by Alice`);
 
-// 5. Specialists must carry NO lease history.
-//
-//    The opening beat has to read GRANT_MISSING. security-service.ts returns that
-//    only when no grant record exists for the agent/resource pair: a revoked one
-//    yields GRANT_REVOKED and an expired one yields GRANT_EXPIRED. Revoking a
-//    leftover lease is therefore NOT enough — the record has to be gone, and
-//    recreating the agent is the only way to drop it. Every take after the first
-//    needs this, or the denial quietly shows the wrong reason.
-let { agents } = await call("/api/agents");
+for (let attempt = 0; attempt < 20; attempt += 1) {
+  const agents = (await call("/api/agents")).agents;
+  if (TEAM.every((name) => !agents.find((agent) => agent.name === name)?.activeTeamTaskId)) break;
+  await new Promise((resolve) => setTimeout(resolve, 500));
+}
 
-for (const name of SPECIALISTS) {
-  let agent = agents.find((a) => a.name === name);
-  if (!agent) {
-    bad(`specialist "${name}" is missing — restart the server to reseed the demo Agents`);
-    continue;
+const agents = (await call("/api/agents")).agents;
+for (const name of TEAM) {
+  const agent = agents.find((item) => item.name === name);
+  if (!agent) bad(`team Agent "${name}" is missing`);
+  else if (agent.activeTeamTaskId) bad(`"${name}" is still reserved`);
+  else if (agent.status !== "ready") bad(`"${name}" is ${agent.status}, not ready`);
+  else ok(`"${name}" is ready`);
+}
+
+if (SMOKE && problems.length === 0) {
+  let smokeAgent = agents.find((item) => item.name === "Weather Forecaster");
+  if (smokeAgent && ["error", "stopped"].includes(smokeAgent.status)) {
+    smokeAgent = (await call(`/api/agents/${smokeAgent.id}/start`, { method: "POST" })).agent;
+    note("reset Weather Forecaster after its previous smoke run");
   }
-
-  const history = (await call("/api/agents/" + agent.id + "/permissions")).grants;
-  if (FRESH || history.length > 0) {
-    if (agent.status === "busy") {
-      bad(`"${name}" is busy — wait for its run to finish, then rerun this script`);
-      continue;
-    }
-    // Preserve the seeded persona: the Lead picks specialists by description.
-    const { description, instructions } = agent;
-    await call("/api/agents/" + agent.id, { method: "DELETE" });
-    const created = await call("/api/agents", {
+  if (!smokeAgent || smokeAgent.status !== "ready") {
+    bad("Weather Forecaster cannot run the provider smoke test");
+  } else {
+    const started = await call(`/api/agents/${smokeAgent.id}/messages`, {
       method: "POST",
-      body: JSON.stringify({ name, description, instructions }),
+      body: JSON.stringify({ content: "Reply with exactly RUNTIME READY." }),
     });
-    agent = created.agent;
-    note(
-      history.length
-        ? `recreated "${name}" — it carried ${history.length} past lease record(s), which would ` +
-          `make the denial read "${history.some((g) => g.state === "revoked") ? "Capability was revoked" : "Capability expired"}" ` +
-          'instead of "No matching capability"'
-        : `recreated "${name}" — --fresh was requested`,
-    );
+    let terminal = null;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      const current = (await call(`/api/runs/${started.run.id}`)).run;
+      if (["completed", "failed", "cancelled"].includes(current.status)) {
+        terminal = current;
+        break;
+      }
+    }
+    if (terminal?.status === "completed") {
+      ok("live Ark-backed Docker turn completed");
+    } else {
+      bad(`live provider smoke test failed: ${terminal?.error ?? "timed out"}`);
+      await call(`/api/agents/${smokeAgent.id}/start`, { method: "POST" });
+      note("returned Weather Forecaster to ready after the failed smoke run");
+    }
   }
-
-  const { grants } = await call("/api/agents/" + agent.id + "/permissions");
-  if (grants.length === 0) ok(`"${name}" has no lease history`);
-  else bad(`"${name}" still has ${grants.length} grant record(s) — rerun with --fresh`);
-}
-
-// 6. Roster must be ready and unreserved, or Start is disabled.
-({ agents } = await call("/api/agents"));
-for (const name of [LEAD, ...SPECIALISTS]) {
-  const agent = agents.find((a) => a.name === name);
-  if (!agent) bad(`team agent "${name}" is missing`);
-  else if (agent.activeTeamTaskId) bad(`"${name}" is still reserved by a team task`);
-  else if (agent.status !== "ready") bad(`"${name}" is "${agent.status}", not ready`);
-  else ok(`team agent "${name}" is ready`);
+} else if (!SMOKE) {
+  note("provider quota was not exercised; use --smoke immediately before recording");
 }
 
 console.log("");
@@ -247,4 +186,4 @@ if (problems.length) {
   process.exit(1);
 }
 console.log(`Ready to record${notes.length ? ` (${notes.length} note(s) above)` : ""}.`);
-console.log("Next:  npx playwright test --config scripts/demo-video/playwright.config.ts\n");
+console.log("Open http://localhost:3000 and follow docs/UNIFIED_DEMO.md.\n");

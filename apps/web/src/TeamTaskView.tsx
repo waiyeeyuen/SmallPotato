@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { MarkdownContent } from "./MarkdownContent";
-import type { Agent, ResourceSummary, TeamAgentSelection, TeamTask, TeamTaskEvent } from "./types";
+import type {
+  Agent,
+  ResourceSummary,
+  TeamAgentSelection,
+  TeamResourceAccessMode,
+  TeamTask,
+  TeamTaskEvent,
+} from "./types";
 
 interface Props {
   agents: Agent[];
@@ -36,6 +43,8 @@ const EVENT_LABEL: Record<string, string> = {
   turn_retry: "Retried a turn",
   turn_failed: "Turn failed",
   resource_authorization: "Access decision",
+  task_access_granted: "Task access issued",
+  task_access_revoked: "Task access closed",
   task_paused: "Paused",
   task_resumed: "Resumed",
   task_completed: "Task finished",
@@ -89,6 +98,8 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
   const [agentSelection, setAgentSelection] = useState<TeamAgentSelection>("user");
   const [specialistIds, setSpecialistIds] = useState<string[]>([]);
   const [resourceId, setResourceId] = useState("");
+  const [resourceAccessMode, setResourceAccessMode] =
+    useState<TeamResourceAccessMode>("task");
   const [submitting, setSubmitting] = useState(false);
   const [, setClock] = useState(0);
   const objectiveRef = useRef<HTMLTextAreaElement>(null);
@@ -98,6 +109,10 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
   const readyAgents = useMemo(
     () => agents.filter((agent) => agent.status === "ready" && !agent.activeTeamTaskId),
     [agents],
+  );
+  const ownedResources = useMemo(
+    () => resources.filter((resource) => resource.ownedByCurrentUser),
+    [resources],
   );
   const openTask = tasks.find((item) => item.status === "running" || item.status === "paused");
   const participants = task ? [task.leadAgentId, ...task.specialistAgentIds] : [];
@@ -200,10 +215,12 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
         specialistAgentIds: leadPicksAgents ? [] : specialistIds,
         agentSelection,
         ...(resourceId ? { resourceId } : {}),
+        ...(resourceId ? { resourceAccessMode } : {}),
       });
       setObjective("");
       setSpecialistIds([]);
       setResourceId("");
+      setResourceAccessMode("task");
       setSelectedId(result.task.id);
       setTask(result.task);
       setEvents([]);
@@ -234,6 +251,8 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
     setSelectedId(null);
     setObjective("");
     setSpecialistIds([]);
+    setResourceId("");
+    setResourceAccessMode("task");
     window.requestAnimationFrame(() => objectiveRef.current?.focus());
   };
 
@@ -303,6 +322,12 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
             at: item.createdAt,
             body: item.content,
           });
+          break;
+        case "task_access_granted":
+          entries.push({ kind: "note", id: item.id, tone: "allow", at: item.createdAt, body: item.content });
+          break;
+        case "task_access_revoked":
+          entries.push({ kind: "note", id: item.id, tone: "info", at: item.createdAt, body: item.content });
           break;
         case "turn_retry":
         case "turn_failed":
@@ -444,18 +469,52 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
                     Protected document (optional)
                     <select value={resourceId} onChange={(event) => setResourceId(event.target.value)}>
                       <option value="">No protected document</option>
-                      {resources.map((resource) => (
+                      {ownedResources.map((resource) => (
                         <option key={resource.id} value={resource.id}>
-                          {resource.name}
+                          {resource.name} · yours
                         </option>
                       ))}
                     </select>
                   </label>
                   {resourceId && (
-                    <p className="team-hint">
-                      Each member is checked against its own capability lease before its turn runs.
-                      Without one the task pauses and nothing is mounted.
-                    </p>
+                    <fieldset className="team-access-consent">
+                      <legend>Document access</legend>
+                      <label className="team-choice">
+                        <input
+                          type="radio"
+                          name="resourceAccessMode"
+                          checked={resourceAccessMode === "task"}
+                          onChange={() => setResourceAccessMode("task")}
+                        />
+                        <span>
+                          <strong>Authorize for this task</strong>
+                          <small>
+                            Recommended · issue temporary read-only capabilities to the final
+                            specialist roster, then revoke them automatically when the task ends.
+                          </small>
+                        </span>
+                      </label>
+                      <label className="team-choice">
+                        <input
+                          type="radio"
+                          name="resourceAccessMode"
+                          checked={resourceAccessMode === "manual"}
+                          onChange={() => setResourceAccessMode("manual")}
+                        />
+                        <span>
+                          <strong>Require manual approval</strong>
+                          <small>
+                            The first specialist without a lease is denied before Runtime execution,
+                            and the task pauses for approval.
+                          </small>
+                        </span>
+                      </label>
+                      <p className="team-hint">
+                        The Lead coordinates without the raw document. Every specialist is still
+                        checked separately before each turn; attaching a document never grants
+                        account-wide access.
+                      </p>
+                    </fieldset>
                   )}
                   {leadPicksAgents ? (
                     <p className="team-hint">
@@ -526,6 +585,14 @@ export function TeamTaskView({ agents, resources, onAgentsChanged, onCreateAgent
               <summary>This task</summary>
               <div className="team-panel-body">
                 <p className="team-mode">{modeText(task)}</p>
+                {task.resourceId && (
+                  <p className="team-access-summary">
+                    <strong>{task.resourceAccessMode === "task" ? "Task-scoped access" : "Manual access"}</strong>
+                    {task.resourceAccessMode === "task"
+                      ? " · temporary read capabilities for the specialist roster"
+                      : " · each specialist needs an existing lease"}
+                  </p>
+                )}
                 <ul className="team-members">
                   {participants.map((id, index) => {
                     const agent = agentMap.get(id);

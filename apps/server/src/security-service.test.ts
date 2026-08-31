@@ -110,6 +110,65 @@ describe("SecurityService", () => {
     expect(denied.resource).toBeNull();
   });
 
+  it("redacts another user's protected-resource metadata", async () => {
+    const { security } = await makeSecurity();
+    const bobResource = security.listResources(alice).find((item) => !item.ownedByCurrentUser);
+    expect(bobResource).toMatchObject({
+      name: "Finance Report",
+      sizeBytes: 0,
+      description: "Protected resource owned by Bob Lim. Contents and private metadata are hidden.",
+    });
+    expect(bobResource?.description).not.toContain("finance planning");
+  });
+
+  it("confines automatic grants to one Team Task and revokes them at the boundary", async () => {
+    const { security } = await makeSecurity();
+    const guardedAgent = agent();
+    const resource = security.listResources(alice).find((item) => item.ownedByCurrentUser);
+    if (!resource) throw new Error("Expected Alice fixture resource");
+
+    const { grants: [grant], issuedCount } = await security.ensureTaskGrants(
+      alice,
+      [guardedAgent],
+      resource.id,
+      "task-authorized",
+      300,
+    );
+    expect(issuedCount).toBe(1);
+    expect(grant).toMatchObject({ source: "team_task", teamTaskId: "task-authorized" });
+
+    const outsideTask = await security.authorizeResourceRead(alice, guardedAgent, resource.id);
+    expect(outsideTask.decision).toMatchObject({ outcome: "deny", reason: "GRANT_MISSING", teamTaskId: null });
+    const wrongTask = await security.authorizeResourceRead(
+      alice,
+      guardedAgent,
+      resource.id,
+      { teamTaskId: "task-other" },
+    );
+    expect(wrongTask.decision).toMatchObject({ outcome: "deny", reason: "GRANT_MISSING", teamTaskId: "task-other" });
+    const insideTask = await security.authorizeResourceRead(
+      alice,
+      guardedAgent,
+      resource.id,
+      { teamTaskId: "task-authorized" },
+    );
+    expect(insideTask.decision).toMatchObject({
+      outcome: "allow",
+      reason: "GRANT_ACTIVE",
+      grantId: grant?.id,
+      teamTaskId: "task-authorized",
+    });
+
+    expect(await security.revokeTaskGrants("task-authorized")).toBe(1);
+    const afterRevoke = await security.authorizeResourceRead(
+      alice,
+      guardedAgent,
+      resource.id,
+      { teamTaskId: "task-authorized" },
+    );
+    expect(afterRevoke.decision).toMatchObject({ outcome: "deny", reason: "GRANT_REVOKED" });
+  });
+
   it("creates, updates, and deletes an owned resource while revoking its leases", async () => {
     const { security, store } = await makeSecurity();
     const guardedAgent = agent();

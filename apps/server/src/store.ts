@@ -5,7 +5,7 @@ import { receiptHash } from "./audit.js";
 import type { Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 5,
+  version: 6,
   users: [],
   sessions: [],
   agents: [],
@@ -29,10 +29,16 @@ function normalizeDatabase(database: Database): Database {
       ...task,
       ownerUserId: task.ownerUserId ?? "user-alice",
       resourceId: task.resourceId ?? null,
+      resourceAccessMode: task.resourceAccessMode ?? "manual",
       agentSelection: task.agentSelection ?? "user",
       turnPolicy: task.turnPolicy ?? null,
       assignmentQueue: task.assignmentQueue ?? [],
       activeTurnStartedAt: task.activeTurnStartedAt ?? null,
+    })),
+    grants: (database.grants ?? []).map((grant) => ({
+      ...grant,
+      source: grant.source ?? "manual",
+      teamTaskId: grant.teamTaskId ?? null,
     })),
     teamTaskEvents: (database.teamTaskEvents ?? []).map((event) => ({
       ...event,
@@ -49,7 +55,7 @@ function migrateDatabase(value: unknown): Database {
     agents?: Array<Record<string, unknown>>;
   };
   if (!Array.isArray(parsed.agents)) throw new Error("Unsupported database format");
-  if (parsed.version === 5) return normalizeDatabase(parsed as Database);
+  if (parsed.version === 6) return normalizeDatabase(parsed as Database);
   let base: Record<string, unknown>;
   if (parsed.version === 3) {
     const legacy = parsed as Partial<Database>;
@@ -67,7 +73,7 @@ function migrateDatabase(value: unknown): Database {
     } else {
       base = parsed as unknown as Record<string, unknown>;
     }
-  } else if (parsed.version === 2 || parsed.version === 4) {
+  } else if (parsed.version === 2 || parsed.version === 4 || parsed.version === 5) {
     const legacy = parsed as Partial<Database>;
     if (Array.isArray(legacy.teamTasks) && Array.isArray(legacy.teamTaskEvents)) {
       base = {
@@ -148,6 +154,7 @@ function migrateDatabase(value: unknown): Database {
       outcome: decision.outcome ?? "deny",
       reason: decision.reason ?? "RESOURCE_NOT_FOUND",
       grantId: decision.grantId ?? null,
+      teamTaskId: decision.teamTaskId ?? null,
       createdAt: decision.createdAt ?? timestamp,
     } as const;
     const migrated = {
@@ -163,7 +170,7 @@ function migrateDatabase(value: unknown): Database {
   return normalizeDatabase({
     ...emptyDatabase(),
     ...base,
-    version: 5,
+    version: 6,
     users,
     agents,
     resources,
@@ -185,7 +192,9 @@ export class JsonStore {
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as unknown;
       const sourceVersion = (parsed as { version?: number }).version;
-      if (sourceVersion === 4) {
+      if (sourceVersion === 5) {
+        await copyFile(this.filePath, this.filePath + ".v5.backup");
+      } else if (sourceVersion === 4) {
         await copyFile(this.filePath, this.filePath + ".v4.backup");
       } else if (
         sourceVersion === 3 &&
@@ -194,7 +203,7 @@ export class JsonStore {
         await copyFile(this.filePath, this.filePath + ".v3-agentguard.backup");
       }
       this.data = migrateDatabase(parsed);
-      if (sourceVersion !== 5) await this.persist(this.data);
+      if (sourceVersion !== 6) await this.persist(this.data);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

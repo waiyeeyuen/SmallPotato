@@ -18,6 +18,7 @@ export type TeamTaskTurnPolicy = "facilitated" | "sequential";
  *   Agents and the Lead names its working roster on its first turn.
  */
 export type TeamAgentSelection = "user" | "lead";
+export type TeamResourceAccessMode = "manual" | "task";
 export type TeamTaskEventType =
   | "task_started"
   | "turn_started"
@@ -28,6 +29,8 @@ export type TeamTaskEventType =
   | "turn_retry"
   | "turn_failed"
   | "resource_authorization"
+  | "task_access_granted"
+  | "task_access_revoked"
   | "task_paused"
   | "task_resumed"
   | "task_completed"
@@ -100,6 +103,13 @@ export interface TeamTask {
    * data access beyond what a lease already allows.
    */
   resourceId: string | null;
+  /**
+   * "task" turns the user's document attachment into explicit consent for the
+   * selected specialist roster to receive temporary read capabilities. "manual"
+   * preserves the deny -> grant -> resume workflow for demonstrations and
+   * exceptional approvals.
+   */
+  resourceAccessMode: TeamResourceAccessMode;
   /**
    * When agentSelection is "user" this is the fixed specialist pool. When it is
    * "lead" this starts as every reserved candidate Agent and is narrowed to the
@@ -187,6 +197,8 @@ export interface PermissionGrant {
   resourceId: string;
   actions: ResourceAction[];
   purpose: string;
+  source: "manual" | "team_task";
+  teamTaskId: string | null;
   grantedByUserId: string;
   createdAt: string;
   expiresAt: string;
@@ -216,6 +228,7 @@ export interface PolicyDecision {
   reason: PolicyReason;
   grantId: string | null;
   runId: string | null;
+  teamTaskId: string | null;
   previousReceiptHash: string | null;
   receiptHash: string;
   createdAt: string;
@@ -228,7 +241,7 @@ export interface RequestActor {
 }
 
 export interface Database {
-  version: 5;
+  version: 6;
   users: User[];
   sessions: Session[];
   agents: Agent[];
@@ -258,6 +271,8 @@ export interface CreateTeamTaskInput {
   leadAgentId: string;
   /** Protected resource the specialists may read, subject to a capability lease. */
   resourceId?: string | undefined;
+  /** Defaults to task-scoped access when a protected resource is attached. */
+  resourceAccessMode?: TeamResourceAccessMode | undefined;
   /** Required when agentSelection is "user"; ignored when it is "lead". */
   specialistAgentIds: string[];
   agentSelection?: TeamAgentSelection | undefined;

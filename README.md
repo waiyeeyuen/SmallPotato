@@ -21,15 +21,6 @@ PotatoGuard moves that boundary out of the model and into trusted middleware:
 
 The UI explains and visualizes these controls, but **the security decision is enforced in the backend/Runtime path, not in the browser**.
 
-## Submission Evidence
-
-| Evaluation area | PotatoGuard evidence |
-| --- | --- |
-| **End-to-end middleware behavior (40%)** | React frontend → Fastify control plane → PotatoGuard authorization → protected-resource vault → read-only Runtime mount → real Codex/Ark Agent Run. DENY stops before Runtime creation/mount. |
-| **Technical design & integration (25%)** | Human/Agent identity separation, scoped capability leases, two explicit trust boundaries, deny-by-default policy, integration with the existing Agent and Team Task execution paths. |
-| **Verification & robustness (20%)** | Automated authentication, ownership, lease, revocation, expiry, cross-user isolation, Runtime-mount and audit-chain tests; strict request schemas; secret/header redaction; denial and cleanup paths. |
-| **Demo & reproducibility (15%)** | `npm run check`, one-command local startup with `npm run poc`, fictional seeded fixtures, a three-minute live demo, an extended judge runbook, documented limitations, and `.env.example`. |
-
 ## Core Middleware Capabilities
 
 ### 1. Human / Agent Identity Separation

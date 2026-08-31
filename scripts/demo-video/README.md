@@ -1,7 +1,7 @@
 # Demo video harness
 
 This harness records the real workflow in
-[`docs/UNIFIED_DEMO.md`](../../docs/UNIFIED_DEMO.md): an immediate cross-user
+[`docs/demo-runbook.md`](../../docs/demo-runbook.md): an immediate cross-user
 denial followed by a protected Tokyo Team Task with automatic task-bound access,
 real Ark model calls, per-turn read-only mounts, terminal revocation, and both
 verified evidence views.
@@ -39,5 +39,5 @@ Environment knobs:
 | `DEMO_SLOWMO` | `260` | Delay between visible browser actions |
 
 If a real model-format failure pauses the task, use the manual plan in
-`docs/UNIFIED_DEMO.md` or resume after showing the retry evidence. Always rerun
+`docs/demo-runbook.md` or resume after showing the retry evidence. Always rerun
 `prepare.mjs` before another take so no Alice task remains open.

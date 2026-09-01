@@ -15,8 +15,9 @@ Autonomous Agents create a control problem: an Agent may be misconfigured, manip
 PotatoGuard moves that boundary out of the model and into trusted middleware:
 
 - the authenticated human and the Agent have separate identities;
-- protected-resource authority is delegated to a specific Agent principal, not inherited from the human;
-- access is scoped to a resource, action, context, expiry, and revocation state;
+- for resources owned by the authenticated human, read authority is delegated to a specific Agent principal rather than inherited automatically;
+- cross-user resources use an explicit owner-to-recipient-user share; every read is still restricted to an Agent owned by that recipient and attributed to the executing Agent principal; and
+- access is scoped to a resource, action, expiry, and revocation state, with Team Task capabilities additionally bound to the relevant task context;
 - both single-Agent and multi-Agent execution paths converge on the same server-side authorization boundary;
 - authorization is enforced immediately before protected Runtime access;
 - denied requests stop before the protected file is mounted or the protected Agent Run begins; and
@@ -41,18 +42,23 @@ The UI explains and visualizes these controls, but **the security decision is en
 
 ### 2. Scoped, Revocable Access Leases
 
-Protected-resource authority is represented as a temporary capability scoped to the relevant Agent and operation rather than as standing human authority.
+For a resource owned by the signed-in user, authority is represented as a temporary capability scoped to the relevant Agent principal and operation. Cross-user access uses a separate owner-controlled share to the recipient user; any Agent owned by that recipient may then request a read, with the decision still attributed to that Agent.
 
 Conceptually:
 
 ```text
-Agent principal + action + resource + context + expiry + revocation state
+Owned resource:
+Agent principal + action + resource + optional task context + expiry + revocation
+
+Cross-user resource:
+Owner-to-recipient share + action + resource + expiry + revocation
 ```
 
 - grants can expire automatically;
 - owners can revoke access;
 - Team Task capabilities are issued only to the authorized specialist roster and are revoked when the team lifecycle ends; and
-- cross-user resource sharing uses explicit owner-controlled grants rather than implicit access.
+- cross-user resource sharing uses explicit owner-controlled user shares rather than implicit access; and
+- Agent ownership is still checked and every resulting read is attributed to the executing Agent principal.
 
 **Implementation:** `apps/server/src/security-service.ts`, `apps/server/src/types.ts`, `apps/server/src/team-task-service.ts`
 
@@ -88,7 +94,12 @@ In a Team Task, a lead/orchestrator coordinates multiple specialist Agents. Each
 
 PotatoGuard does **not** grant blanket authority to the Team Task. Protected-resource access remains scoped to the specialist Agent, resource, action, task context, expiry, and revocation state.
 
-If a specialist lacks authority, the protected turn is denied before Runtime access. Where manual approval is enabled, the Team Task can pause, obtain human approval, and resume with newly delegated authority.
+PotatoGuard supports two protected-document authorization modes:
+
+- **Authorize for this task** — the human's start action records explicit consent. If the Lead chooses the specialists, it first locks the roster using only the objective and Agent descriptions. PotatoGuard then issues separate task-bound, read-only capabilities only to that final specialist roster.
+- **Ask me when needed** — PotatoGuard pauses before the first unauthorized specialist Runtime and displays an inline approval request containing the Agent, document, purpose, permission, and expiry. The human may allow one turn, allow that Agent for the Team, allow the current roster, or deny the request. Approval resumes the blocked specialist automatically.
+
+The Lead coordinates the workflow but never receives the raw protected document. It receives only specialist contributions after each independently authorized turn. The model cannot create or resolve authorization requests.
 
 This means the same middleware boundary protects:
 
@@ -147,7 +158,7 @@ The host controls these mounts; PotatoGuard does **not** claim that the host its
 
 ### 7. Tamper-Evident Audit Receipts
 
-Authorization and resource-management actions generate receipts with human / Agent attribution. Receipts are linked by hash so modification of stored evidence is detectable during chain verification.
+Authorization and resource-management actions generate receipts with human / Agent attribution. The core authorization decision fields and receipt ordering are linked by hash, so modification of those protected fields is detectable during chain verification. Runtime correlation is attached separately after authorization and is not currently covered by the receipt hash.
 
 Audit evidence can include:
 
@@ -156,8 +167,9 @@ Audit evidence can include:
 - resource/action;
 - ALLOW or DENY decision and reason;
 - timestamp;
-- Run / Team Task correlation where applicable; and
-- receipt-chain hashes.
+- Run / Team Task correlation where applicable;
+- receipt-chain hashes; and
+- a clear distinction between hash-protected decision fields and separately attached Runtime correlation.
 
 The UI can verify the chain and export decision evidence as CSV without exporting protected document contents.
 
@@ -396,7 +408,9 @@ The server test suite includes coverage across the middleware boundary, includin
 - missing, expired and revoked grants;
 - cross-user sharing and denial;
 - protected Runtime mount behavior;
-- Team Task authorization and approval / resume behavior;
+- Lead-selected roster authorization before capability issuance;
+- inline one-turn, one-Agent, and roster-wide Team Task approval;
+- denial, expired/stale approval handling, automatic resume, and one-turn capability consumption;
 - resource deletion / cleanup; and
 - audit receipt hash-chain verification and tamper detection.
 
@@ -419,13 +433,13 @@ apps/server/src/store.test.ts
 | --- | --- |
 | **Server-derived human identity** | HttpOnly server session; strict request schemas reject browser-controlled identity / owner fields. |
 | **Independent Agent identity** | Server-generated Agent `principalId` distinct from the owning human. |
-| **Least privilege** | Temporary capabilities scoped to an Agent, resource, action and relevant context / expiry. |
+| **Least privilege** | User-owned resources require temporary per-Agent capabilities scoped to a resource and action; Team Task grants also carry the task context. Cross-user access requires an owner-controlled share to the recipient user. |
 | **Per-specialist multi-Agent authorization** | Team Task specialists retain separate principals and are checked independently before protected turns. |
 | **Revocation / expiry** | State checked on each protected request; stale authority is denied. |
 | **Pre-Runtime enforcement** | PotatoGuard evaluates access before the protected file is mounted or protected Agent Run proceeds. |
 | **Cross-user isolation** | Foreign resources / Agents require explicit authority; inappropriate direct lookups are filtered / denied. |
 | **Read-only protected mount** | Approved protected resource enters the local disposable Runtime as a read-only mount. |
-| **Tamper evidence** | Hash-chained receipts can be verified; mutation breaks chain verification. |
+| **Tamper evidence** | Core authorization decision fields and receipt ordering are hash-chained and verifiable. Runtime correlation is attached separately and is not currently hash-protected. |
 | **Sensitive-data handling** | Protected contents are not placed in audit CSVs; sensitive request headers are redacted by server logging where configured. |
 
 ---
@@ -465,7 +479,6 @@ npm run check     # typecheck + tests + builds
 
 - **Architecture:** [docs/POTATOGUARD_ARCHITECTURE.md](docs/POTATOGUARD_ARCHITECTURE.md)
 - **Three-minute demo:** [docs/demo-runbook.md](docs/demo-runbook.md)
-- **Extended judge runbook:** [docs/JUDGE_RUNBOOK.md](docs/JUDGE_RUNBOOK.md)
 - **Security policy / limitations:** [SECURITY.md](SECURITY.md)
 
 ---
